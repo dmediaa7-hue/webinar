@@ -1,0 +1,28 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+client/dist/
+
+# Environment files (keep server/.env local)
+.env
+.env.local
+.env.production.local
+
+# Logs
+*.log
+dev.log
+preview.log
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# OpenCode
+.omo/
+
+# Misc
+*.md~

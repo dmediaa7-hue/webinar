@@ -1,0 +1,263 @@
+import { useEffect, useRef } from 'react';
+import { io } from 'socket.io-client';
+import { SERVER_URL, EVENTS } from '../utils/constants';
+import useStore from '../store/useStore';
+import { useWebRTC } from './useWebRTC';
+
+const socket = io(SERVER_URL, {
+  autoConnect: false,
+  transports: ['websocket']
+});
+
+export function useSocket() {
+  const store = useStore;
+  const webRTC = useWebRTC(socket);
+
+  useEffect(() => {
+    // Auto-connect when component mounts
+    if (!socket.connected) {
+      socket.connect();
+    }
+
+    // Set up all event listeners
+    const setupListeners = () => {
+      // Room events
+      socket.on(EVENTS.ROOM_JOINED, ({ roomId, roomName, participants, isHost, settings }) => {
+        store.getState().setRoom(roomId);
+        if (roomName) store.getState().setRoomName(roomName);
+        store.getState().setIsHost(isHost);
+        store.getState().setRoomSettings(settings || {});
+
+        // Add existing participants (they'll be "pending" - we'll negotiate with them)
+        participants.forEach(p => {
+          store.getState().addParticipant({ ...p, stream: null });
+          webRTC.createPeer(p.socketId, true); // initiator
+        });
+
+        store.getState().setIsConnecting(false);
+        console.log('[Socket] Joined room:', roomId);
+      });
+
+      socket.on(EVENTS.PARTICIPANT_JOINED, ({ participant }) => {
+        console.log('[Socket] Participant joined:', participant.displayName);
+        store.getState().addParticipant({ ...participant, stream: null });
+        // Non-initiator - wait for offer
+        webRTC.createPeer(participant.socketId, false);
+      });
+
+      socket.on(EVENTS.PARTICIPANT_LEFT, ({ socketId }) => {
+        console.log('[Socket] Participant left:', socketId);
+        store.getState().removeParticipant(socketId);
+        store.getState().removePeer(socketId);
+        store.getState().removeTypingUser(socketId);
+      });
+
+      // Signaling events
+      socket.on(EVENTS.OFFER, ({ from, fromName, sdp, type }) => {
+        webRTC.handleOffer(from, fromName, sdp);
+      });
+
+      socket.on(EVENTS.ANSWER, ({ from, sdp }) => {
+        webRTC.handleAnswer(from, sdp);
+      });
+
+      socket.on(EVENTS.ICE_CANDIDATE, ({ from, candidate }) => {
+        webRTC.handleIceCandidate(from, candidate);
+      });
+
+      // Media toggle events
+      socket.on(EVENTS.PARTICIPANT_AUDIO_TOGGLED, ({ socketId, isMuted }) => {
+        store.getState().updateParticipant(socketId, { isMuted });
+        // Pause/resume audio tracks
+        const p = store.getState().participants.get(socketId);
+        if (p?.stream) {
+          p.stream.getAudioTracks().forEach(track => {
+            track.enabled = !isMuted;
+          });
+        }
+      });
+
+      socket.on(EVENTS.PARTICIPANT_VIDEO_TOGGLED, ({ socketId, isVideoOff }) => {
+        store.getState().updateParticipant(socketId, { isVideoOff });
+      });
+
+      // Screen share events
+      socket.on(EVENTS.SCREEN_SHARE_STARTED, ({ socketId, displayName }) => {
+        store.getState().updateParticipant(socketId, { isScreenSharing: true });
+      });
+
+      socket.on(EVENTS.SCREEN_SHARE_STOPPED, ({ socketId }) => {
+        store.getState().updateParticipant(socketId, { isScreenSharing: false });
+      });
+
+      // Chat events
+      socket.on(EVENTS.CHAT_MESSAGE, (message) => {
+        store.getState().addMessage(message);
+      });
+
+      socket.on(EVENTS.USER_TYPING, ({ senderId, isTyping }) => {
+        if (isTyping) {
+          store.getState().addTypingUser(senderId);
+        } else {
+          store.getState().removeTypingUser(senderId);
+        }
+      });
+
+      // Host control events
+      socket.on(EVENTS.KICKED, ({ byHost }) => {
+        console.log('[Socket] Kicked by', byHost);
+        handleKicked();
+      });
+
+      socket.on(EVENTS.FORCE_MUTE, () => {
+        store.getState().setIsMuted(true);
+        // Actually mute local stream
+        const localStream = store.getState().localStream;
+        if (localStream) {
+          localStream.getAudioTracks().forEach(track => {
+            track.enabled = false;
+          });
+        }
+      });
+
+      socket.on(EVENTS.ROOM_LOCKED, ({ isLocked }) => {
+        store.getState().setRoomSettings({ ...store.getState().roomSettings, isLocked });
+      });
+
+      socket.on(EVENTS.ROOM_SETTINGS_UPDATED, (settings) => {
+        store.getState().setRoomSettings(settings);
+      });
+
+      socket.on(EVENTS.ERROR, ({ message }) => {
+        console.error('[Socket] Error:', message);
+        alert(message);
+      });
+
+      socket.on(EVENTS.RECORDING_STARTED, () => {
+        store.getState().setIsRecording(true);
+      });
+
+      socket.on(EVENTS.RECORDING_STOPPED, () => {
+        store.getState().setIsRecording(false);
+      });
+
+      socket.on('disconnect', () => {
+        console.log('[Socket] Disconnected from server');
+      });
+    };
+
+    setupListeners();
+
+    return () => {
+      // Cleanup listeners
+      socket.off(EVENTS.ROOM_JOINED);
+      socket.off(EVENTS.PARTICIPANT_JOINED);
+      socket.off(EVENTS.PARTICIPANT_LEFT);
+      socket.off(EVENTS.OFFER);
+      socket.off(EVENTS.ANSWER);
+      socket.off(EVENTS.ICE_CANDIDATE);
+      socket.off(EVENTS.PARTICIPANT_AUDIO_TOGGLED);
+      socket.off(EVENTS.PARTICIPANT_VIDEO_TOGGLED);
+      socket.off(EVENTS.SCREEN_SHARE_STARTED);
+      socket.off(EVENTS.SCREEN_SHARE_STOPPED);
+      socket.off(EVENTS.CHAT_MESSAGE);
+      socket.off(EVENTS.USER_TYPING);
+      socket.off(EVENTS.KICKED);
+      socket.off(EVENTS.FORCE_MUTE);
+      socket.off(EVENTS.ROOM_LOCKED);
+      socket.off(EVENTS.ROOM_SETTINGS_UPDATED);
+      socket.off(EVENTS.ERROR);
+      socket.off(EVENTS.RECORDING_STARTED);
+      socket.off(EVENTS.RECORDING_STOPPED);
+    };
+  }, []);
+
+  return socket;
+}
+
+// Handle being kicked - navigate away
+const handleKicked = () => {
+  useStore.getState().resetAll();
+  useStore.getState().setIsConnecting(false);
+  window.location.href = '/?kicked=true';
+};
+
+// Helper methods for actions
+export function createRoom(displayName, password = null, roomName = null) {
+  return new Promise((resolve, reject) => {
+    socket.emit(EVENTS.CREATE_ROOM, { displayName, password, roomName }, (response) => {
+      if (response?.success) {
+        resolve({ roomId: response.roomId, roomName: response.roomName, hasPassword: Boolean(response.hasPassword) });
+      } else {
+        reject(response?.error || 'Failed to create room');
+      }
+    });
+  });
+}
+
+export function joinRoom(roomId, displayName, password = null) {
+  return new Promise((resolve, reject) => {
+    socket.emit(EVENTS.JOIN_ROOM, { roomId, displayName, password }, (response) => {
+      if (response?.success) {
+        resolve(response);
+      } else {
+        const err = new Error(response?.error || 'Failed to join room');
+        err.code = response?.code;
+        reject(err);
+      }
+    });
+  });
+}
+
+export async function roomRequiresPassword(roomId) {
+  const res = await fetch(`${SERVER_URL}/api/rooms/${roomId}`);
+  if (!res.ok) {
+    const err = new Error('Room not found');
+    err.code = 'ROOM_NOT_FOUND';
+    throw err;
+  }
+  const data = await res.json();
+  return Boolean(data.hasPassword);
+}
+
+export function leaveRoom() {
+  socket.emit(EVENTS.LEAVE_ROOM);
+}
+
+export function sendChatMessage(message) {
+  socket.emit(EVENTS.CHAT_MESSAGE, { message });
+}
+
+export function sendTyping(isTyping) {
+  socket.emit(EVENTS.TYPING_INDICATOR, { isTyping });
+}
+
+export function toggleAudio(isMuted) {
+  socket.emit(EVENTS.TOGGLE_AUDIO, { isMuted });
+}
+
+export function toggleVideo(isVideoOff) {
+  socket.emit(EVENTS.TOGGLE_VIDEO, { isVideoOff });
+}
+
+export function screenShareStarted() {
+  socket.emit(EVENTS.SCREEN_SHARE_STARTED);
+}
+
+export function screenShareStopped() {
+  socket.emit(EVENTS.SCREEN_SHARE_STOPPED);
+}
+
+export function muteParticipant(targetId) {
+  socket.emit(EVENTS.MUTE_PARTICIPANT, { targetId });
+}
+
+export function kickParticipant(targetId) {
+  socket.emit(EVENTS.KICK_PARTICIPANT, { targetId });
+}
+
+export function lockRoom(isLocked) {
+  socket.emit(EVENTS.LOCK_ROOM, { isLocked });
+}
+
+export default socket;

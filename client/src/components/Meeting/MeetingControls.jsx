@@ -1,0 +1,123 @@
+import React from 'react';
+import {
+  Mic,
+  MicOff,
+  Video,
+  VideoOff,
+  MonitorUp,
+  MonitorDown,
+  MessageSquare,
+  Users,
+  PhoneOff,
+  CircleDot
+} from 'lucide-react';
+
+export default function MeetingControls({
+  isMuted,
+  isVideoOff,
+  isScreenSharing,
+  isRecording,
+  activePanel,
+  onToggleAudio,
+  onToggleVideo,
+  onToggleScreenShare,
+  onToggleChat,
+  onToggleParticipants,
+  onLeave
+}) {
+  return (
+    <div className="px-4 py-3 bg-meeting-surface border-t border-meeting-border">
+      <div className="max-w-3xl mx-auto flex items-center justify-center gap-2">
+        {/* Mic toggle */}
+        <button
+          onClick={onToggleAudio}
+          className={`p-3 rounded-lg transition-all duration-200 ${
+            isMuted
+              ? 'bg-red-600 hover:bg-red-700'
+              : 'bg-meeting-card hover:bg-white/10'
+          }`}
+          title={isMuted ? 'Unmute' : 'Mute'}
+        >
+          {isMuted ? <MicOff size={20} /> : <Mic size={20} />}
+        </button>
+
+        {/* Video toggle */}
+        <button
+          onClick={onToggleVideo}
+          className={`p-3 rounded-lg transition-all duration-200 ${
+            isVideoOff
+              ? 'bg-red-600 hover:bg-red-700'
+              : 'bg-meeting-card hover:bg-white/10'
+          }`}
+          title={isVideoOff ? 'Turn camera on' : 'Turn camera off'}
+        >
+          {isVideoOff ? <VideoOff size={20} /> : <Video size={20} />}
+        </button>
+
+        {/* Screen share */}
+        <button
+          onClick={onToggleScreenShare}
+          className={`p-3 rounded-lg transition-all duration-200 ${
+            isScreenSharing
+              ? 'bg-primary hover:bg-primary-dark'
+              : 'bg-meeting-card hover:bg-white/10'
+          }`}
+          title={isScreenSharing ? 'Stop sharing' : 'Share screen'}
+        >
+          {isScreenSharing ? <MonitorDown size={20} /> : <MonitorUp size={20} />}
+        </button>
+
+        {/* Separator */}
+        <div className="w-px h-6 bg-meeting-border mx-1" />
+
+        {/* Recording indicator (visual only - server simulates) */}
+        <button
+          className={`p-3 rounded-lg transition-all duration-200 ${
+            isRecording ? 'bg-red-600 text-white' : 'bg-meeting-card hover:bg-white/10'
+          }`}
+          title={isRecording ? 'Recording' : 'Start recording (simulated)'}
+        >
+          <CircleDot size={20} className={isRecording ? 'recording-pulse' : ''} />
+        </button>
+
+        {/* Chat */}
+        <button
+          onClick={onToggleChat}
+          className={`p-3 rounded-lg transition-all duration-200 ${
+            activePanel === 'chat'
+              ? 'bg-primary hover:bg-primary-dark'
+              : 'bg-meeting-card hover:bg-white/10'
+          }`}
+          title="Chat"
+        >
+          <MessageSquare size={20} />
+        </button>
+
+        {/* Participants */}
+        <button
+          onClick={onToggleParticipants}
+          className={`p-3 rounded-lg transition-all duration-200 ${
+            activePanel === 'participants'
+              ? 'bg-primary hover:bg-primary-dark'
+              : 'bg-meeting-card hover:bg-white/10'
+          }`}
+          title="Participants"
+        >
+          <Users size={20} />
+        </button>
+
+        {/* Separator */}
+        <div className="w-px h-6 bg-meeting-border mx-1" />
+
+        {/* Leave */}
+        <button
+          onClick={onLeave}
+          className="p-3 rounded-lg bg-red-600 hover:bg-red-700 transition-colors"
+          title="Leave meeting"
+        >
+          <PhoneOff size={20} />
+        </button>
+      </div>
+    </div>
+  );
+}

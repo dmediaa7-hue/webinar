@@ -1,0 +1,76 @@
+# =============================================================================
+# Webinar - InfinityFree / LiteSpeed configuration
+#
+# InfinityFree is a STATIC PHP host:
+#   - It CANNOT run Node.js (backend must live elsewhere, e.g. Render)
+#   - mod_proxy / ProxyPass are BLOCKED -> NO proxy rules here.
+#   - The browser connects directly to the backend via VITE_SERVER_URL.
+#   - LiteSpeed supports mod_rewrite .htaccess rules for the SPA fallback.
+# =============================================================================
+
+Options -Indexes
+DirectoryIndex index.html
+
+# -----------------------------------------------------------------------------
+# 1. SPA fallback - React Router handles all client-side routes.
+#    Any request that is not a real file/dir goes to index.html.
+#    Real files (assets/, favicon, etc.) are served directly.
+# -----------------------------------------------------------------------------
+<IfModule mod_rewrite.c>
+  RewriteEngine On
+
+  RewriteCond %{REQUEST_FILENAME} !-f
+  RewriteCond %{REQUEST_FILENAME} !-d
+  RewriteRule ^ index.html [L]
+</IfModule>
+
+# -----------------------------------------------------------------------------
+# 2. Security headers
+# -----------------------------------------------------------------------------
+<IfModule mod_headers.c>
+  Header always set X-Content-Type-Options "nosniff"
+  Header always set X-Frame-Options "SAMEORIGIN"
+  Header always set Referrer-Policy "strict-origin-when-cross-origin"
+  Header always set Permissions-Policy "camera=(self), microphone=(self), display-capture=(self)"
+
+  # CSP commented out: WebRTC needs 'self', blob:, mediastream: and wss: to the
+  # external backend. Uncomment and adjust for tighter security:
+  # Header always set Content-Security-Policy "default-src 'self' https://your-backend-url.onrender.com; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob: mediastream:; connect-src 'self' https://your-backend-url.onrender.com wss://your-backend-url.onrender.com; frame-ancestors 'self';"
+</IfModule>
+
+# -----------------------------------------------------------------------------
+# 3. Caching
+#    Vite emits content-hashed filenames -> safe to cache for a year.
+#    index.html must never be cached (SPA updates).
+# -----------------------------------------------------------------------------
+<IfModule mod_expires.c>
+  ExpiresActive On
+  ExpiresDefault "access plus 1 hour"
+  ExpiresByType text/html "access plus 0 seconds"
+  ExpiresByType application/javascript "access plus 1 year"
+  ExpiresByType text/css "access plus 1 year"
+  ExpiresByType image/png "access plus 1 year"
+  ExpiresByType image/jpeg "access plus 1 year"
+  ExpiresByType image/svg+xml "access plus 1 year"
+  ExpiresByType image/x-icon "access plus 1 year"
+  ExpiresByType application/font-woff "access plus 1 year"
+  ExpiresByType application/font-woff2 "access plus 1 year"
+</IfModule>
+
+<IfModule mod_headers.c>
+  <Files "index.html">
+    Header set Cache-Control "no-cache, no-store, must-revalidate"
+  </Files>
+  <FilesMatch "\.(js|css|png|jpg|jpeg|gif|svg|ico|webp|woff2?|ttf|eot)$">
+    Header set Cache-Control "public, max-age=31536000, immutable"
+  </FilesMatch>
+</IfModule>
+
+# -----------------------------------------------------------------------------
+# 4. Optional: force HTTPS (InfinityFree free domains include SSL).
+#    Enable in the control panel (Better: use the built-in Force HTTPS toggle).
+# -----------------------------------------------------------------------------
+# <IfModule mod_rewrite.c>
+#   RewriteCond %{HTTPS} off
+#   RewriteRule ^ https://%{HTTP_HOST}%{REQUEST_URI} [L,R=301]
+# </IfModule>
