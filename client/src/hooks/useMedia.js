@@ -89,6 +89,47 @@ export function useMedia() {
   }, []);
 
   /**
+   * Flip between front/rear camera (or next physical camera on desktop).
+   * Swaps the video track IN PLACE on the existing MediaStream so the local
+   * <video> element keeps playing; the caller must peer.replaceTrack() the
+   * same old/new tracks so remote participants see the flipped feed.
+   */
+  const flipCamera = useCallback(async () => {
+    if (!streamRef.current) return null;
+    const currentTrack = streamRef.current.getVideoTracks()[0];
+    if (!currentTrack) return null;
+
+    const wasOff = !currentTrack.enabled;
+    const settings = currentTrack.getSettings?.() || {};
+    const nextFacing = settings.facingMode === 'environment' ? 'user' : 'environment';
+
+    let newTrack = null;
+    try {
+      const nextStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: nextFacing } });
+      newTrack = nextStream.getVideoTracks()[0];
+    } catch {
+      const devices = await navigator.mediaDevices.enumerateDevices().catch(() => []);
+      const cameras = devices.filter(d => d.kind === 'videoinput');
+      const other = cameras.find(c => c.deviceId !== settings.deviceId);
+      if (cameras.length > 1 && other) {
+        try {
+          const nextStream = await navigator.mediaDevices.getUserMedia({ video: { deviceId: { exact: other.deviceId } } });
+          newTrack = nextStream.getVideoTracks()[0];
+        } catch {
+          return null;
+        }
+      }
+      if (!newTrack) return null;
+    }
+
+    newTrack.enabled = !wasOff;
+    streamRef.current.getVideoTracks().forEach(track => track.stop());
+    streamRef.current.removeTrack(currentTrack);
+    streamRef.current.addTrack(newTrack);
+    return { oldTrack: currentTrack, newTrack };
+  }, []);
+
+  /**
    * Start screen sharing
    */
   const startScreenShare = useCallback(async () => {
@@ -103,35 +144,6 @@ export function useMedia() {
       return null;
     }
   }, []);
-
-  /**
-   * Switch camera device
-   */
-  const switchCamera = useCallback(async (deviceId) => {
-    if (!deviceId) return;
-    
-    // Stop current video track
-    const currentTracks = streamRef.current?.getVideoTracks();
-    if (currentTracks) {
-      currentTracks.forEach(track => track.stop());
-    }
-
-    const newStream = await startMedia({
-      audio: { echoCancellation: true, noiseSuppression: true },
-      video: { deviceId: { exact: deviceId } }
-    });
-
-    if (newStream) {
-      setStream(prev => {
-        if (prev) {
-          // Combine new video with old audio
-          const audioTracks = prev.getAudioTracks();
-          audioTracks.forEach(track => newStream.addTrack(track));
-        }
-        return newStream;
-      });
-    }
-  }, [startMedia]);
 
   // Cleanup on unmount
   useEffect(() => {
@@ -153,7 +165,7 @@ export function useMedia() {
     toggleMute,
     toggleVideo,
     startScreenShare,
-    switchCamera,
+    flipCamera,
     getDevices
   };
 }

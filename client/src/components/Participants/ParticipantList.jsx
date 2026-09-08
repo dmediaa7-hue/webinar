@@ -1,15 +1,29 @@
 import React from 'react';
-import { X, MicOff, VideoOff, LogOut, Crown } from 'lucide-react';
-import { getInitials } from '../../utils/constants';
+import { X, MicOff, VideoOff, LogOut, Crown, Download } from 'lucide-react';
+import { getInitials, formatTime } from '../../utils/constants';
+import useStore from '../../store/useStore';
 
 export default function ParticipantList({
   onClose,
   participants,
   isHost,
+  isAdmin,
   currentSocketId,
   onMuteParticipant,
-  onKickParticipant
+  onKickParticipant,
+  onDownloadAttendance
 }) {
+  const attendance = useStore((s) => s.attendance);
+
+  const joinedAtFor = (p) => {
+    if (p.joinedAt) return p.joinedAt;
+    const entry = attendance.find((a) => a.socketId === p.socketId && !a.leftAt);
+    return entry?.joinedAt || null;
+  };
+
+  const leftEntries = attendance
+    .filter((a) => a.leftAt)
+    .sort((a, b) => b.leftAt - a.leftAt);
   return (
     <div className="panel h-full">
       {/* Header */}
@@ -61,6 +75,7 @@ export default function ParticipantList({
                 {p.isMuted && <span className="flex items-center gap-0.5"><MicOff size={8} /> Muted</span>}
                 {p.isVideoOff && <span className="flex items-center gap-0.5"><VideoOff size={8} /> Video off</span>}
                 {!p.isMuted && !p.isVideoOff && <span className="text-green-500">Active</span>}
+                {joinedAtFor(p) && <span className="text-gray-500">Joined {formatTime(joinedAtFor(p))}</span>}
               </div>
             </div>
 
@@ -85,6 +100,34 @@ export default function ParticipantList({
             )}
           </div>
         ))}
+
+        {leftEntries.length > 0 && (
+          <>
+            <div className="px-4 py-2 mt-2 text-[10px] uppercase tracking-wide text-gray-500 border-t border-meeting-border">
+              Left the meeting
+            </div>
+            {leftEntries.map((e) => (
+              <div
+                key={`${e.socketId}-${e.leftAt}`}
+                className="flex items-center px-4 py-2 opacity-70"
+              >
+                <div className="relative mr-3 shrink-0">
+                  <div className="w-9 h-9 rounded-full bg-gradient-to-br from-gray-500/60 to-meeting-card flex items-center justify-center">
+                    <span className="text-sm font-semibold">
+                      {getInitials(e.displayName)}
+                    </span>
+                  </div>
+                </div>
+                <div className="flex-1 min-w-0">
+                  <span className="text-sm font-medium truncate">{e.displayName}</span>
+                  <div className="text-[10px] text-gray-500">
+                    {formatTime(e.joinedAt)} → {formatTime(e.leftAt)}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </>
+        )}
       </div>
 
       {/* Host info footer */}
@@ -93,6 +136,20 @@ export default function ParticipantList({
           <p className="text-xs text-gray-500">
             You are the host. Hover over a participant to mute or remove them.
           </p>
+        </div>
+      )}
+
+      {/* Attendance download (host or admin only) */}
+      {(isHost || isAdmin) && (
+        <div className="px-4 py-3 border-t border-meeting-border">
+          <button
+            onClick={onDownloadAttendance}
+            className="w-full flex items-center justify-center gap-2 px-3 py-2 bg-meeting-card hover:bg-white/10 rounded-lg text-xs text-gray-300 transition-colors"
+            title="Download attendance sheet (CSV)"
+          >
+            <Download size={14} />
+            Download Attendance
+          </button>
         </div>
       )}
     </div>

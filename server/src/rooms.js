@@ -19,6 +19,7 @@ function createRoom(roomId, hostName = 'Host', hostSocketId = null, password = n
     hostId: hostSocketId,
     createdAt: Date.now(),
     participants: new Map(), // socketId -> participant
+    attendance: [], // { socketId, userId, displayName, isHost, joinedAt, leftAt }
     settings: {
       isLocked: false,
       waitingRoomEnabled: false,
@@ -40,6 +41,13 @@ function createRoom(roomId, hostName = 'Host', hostSocketId = null, password = n
       isMuted: false,
       isVideoOff: false,
       isScreenSharing: false,
+      joinedAt: Date.now()
+    });
+    room.attendance.push({
+      socketId: hostSocketId,
+      userId: roomId + '-host',
+      displayName: hostName,
+      isHost: true,
       joinedAt: Date.now()
     });
   }
@@ -95,6 +103,22 @@ function joinRoom(roomId, participant) {
   }
 
   room.participants.set(p.socketId, p);
+
+  const existing = room.attendance.find(a => a.socketId === p.socketId && !a.leftAt);
+  if (existing) {
+    existing.displayName = p.displayName;
+    existing.isHost = p.isHost;
+  } else {
+    room.attendance.push({
+      socketId: p.socketId,
+      userId: p.userId,
+      displayName: p.displayName,
+      isHost: p.isHost,
+      joinedAt: p.joinedAt
+    });
+    if (room.attendance.length > 200) room.attendance.splice(0, room.attendance.length - 200);
+  }
+
   return p;
 }
 
@@ -106,6 +130,21 @@ function joinRoom(roomId, participant) {
 function leaveRoom(roomId, socketId) {
   const room = rooms.get(roomId);
   if (!room) return;
+
+  const participant = room.participants.get(socketId);
+  const activeEntry = room.attendance.find(a => a.socketId === socketId && !a.leftAt);
+  if (activeEntry) {
+    activeEntry.leftAt = Date.now();
+  } else if (participant) {
+    room.attendance.push({
+      socketId,
+      userId: participant.userId,
+      displayName: participant.displayName,
+      isHost: participant.isHost,
+      joinedAt: participant.joinedAt || Date.now(),
+      leftAt: Date.now()
+    });
+  }
 
   room.participants.delete(socketId);
 
@@ -169,6 +208,15 @@ function getParticipant(roomId, socketId) {
   return room.participants.get(socketId) || null;
 }
 
+/**
+ * Get the attendance log for a room
+ */
+function getAttendance(roomId) {
+  const room = rooms.get(roomId);
+  if (!room) return [];
+  return room.attendance;
+}
+
 module.exports = {
   createRoom,
   joinRoom,
@@ -177,6 +225,7 @@ module.exports = {
   getRooms,
   updateParticipant,
   getParticipant,
+  getAttendance,
   roomHasPassword,
   verifyPassword
 };

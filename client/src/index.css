@@ -79,6 +79,35 @@
   }
 }
 
+/* Mirror every participant's camera tile (self + remote). Screen share
+   videos are rendered separately and intentionally stay unmirrored. */
+.mirrored-video {
+  transform: scaleX(-1);
+}
+
+/* Mobile-safe full-viewport helpers. 100vh includes the area under mobile
+   browser toolbars; 100dvh matches the visible viewport, so screens neither
+   overflow under the UI nor cause the browser to auto-hide its chrome. */
+.app-screen {
+  height: 100vh;
+}
+
+@supports (height: 100dvh) {
+  .app-screen {
+    height: 100dvh;
+  }
+}
+
+.app-screen-min {
+  min-height: 100vh;
+}
+
+@supports (min-height: 100dvh) {
+  .app-screen-min {
+    min-height: 100dvh;
+  }
+}
+
 /* Utility animations */
 @keyframes pulse-ring {
   0% { box-shadow: 0 0 0 0 rgba(45, 140, 255, 0.6); }

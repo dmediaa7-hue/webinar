@@ -5,7 +5,7 @@ const { Server } = require('socket.io');
 const { v4: uuidv4 } = require('uuid');
 require('dotenv').config();
 
-const { createRoom, joinRoom, leaveRoom, getRoom, getRooms, updateParticipant, roomHasPassword, verifyPassword } = require('./rooms');
+const { createRoom, joinRoom, leaveRoom, getRoom, getRooms, updateParticipant, roomHasPassword, verifyPassword, getAttendance } = require('./rooms');
 const { handleSignaling } = require('./signaling');
 const { handleChat, getChatHistory } = require('./chat');
 const recording = require('./recording');
@@ -22,6 +22,74 @@ const io = new Server(server, {
 
 const PORT = process.env.PORT || 3001;
 
+// --- Hardening helpers ---
+
+// Sanitize user-provided text: strip control chars, trim, cap length.
+function cleanText(value, maxLength) {
+  if (typeof value !== 'string') return '';
+  return value.replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, maxLength);
+}
+
+function cleanPassword(value) {
+  if (typeof value !== 'string' || !value.trim()) return null;
+  return value.trim().slice(0, 50);
+}
+
+// Failed join-attempt throttle (password brute-force guard), keyed by client IP.
+const joinAttempts = new Map();
+const MAX_ATTEMPTS = 10;
+const WINDOW_MS = 15 * 60 * 1000;
+
+function clientIp(socket) {
+  const fwd = socket.handshake?.headers?.['x-forwarded-for'];
+  if (typeof fwd === 'string' && fwd.trim()) return fwd.split(',')[0].trim();
+  return socket.handshake?.address || 'unknown';
+}
+
+function isRateLimited(ip) {
+  const now = Date.now();
+  const entry = joinAttempts.get(ip);
+  if (!entry) return false;
+  if (now - entry.firstAt > WINDOW_MS) {
+    joinAttempts.delete(ip);
+    return false;
+  }
+  return entry.count >= MAX_ATTEMPTS;
+}
+
+function recordFailedAttempt(ip) {
+  const now = Date.now();
+  const entry = joinAttempts.get(ip);
+  if (!entry || now - entry.firstAt > WINDOW_MS) {
+    joinAttempts.set(ip, { count: 1, firstAt: now });
+  } else {
+    entry.count += 1;
+  }
+  // Bound memory: if the table grows too large, drop it entirely.
+  if (joinAttempts.size > 10000) joinAttempts.clear();
+}
+
+function clearAttempts(ip) {
+  joinAttempts.delete(ip);
+}
+
+// REST gate: requires the room's host socket id header. Deliberately spoofable
+// (same posture as the client isAdmin flag) - blocks casual abuse, not a threat model.
+// In-app flows use socket events gated by socket.data.isHost instead.
+function requireRoomHost(req, res, roomId) {
+  const room = getRoom(roomId);
+  if (!room) {
+    res.status(404).json({ error: 'Room not found' });
+    return null;
+  }
+  const hostId = req.headers['x-host-id'];
+  if (!hostId || !room.hostId || hostId !== room.hostId) {
+    res.status(403).json({ error: 'Forbidden' });
+    return null;
+  }
+  return room;
+}
+
 app.use(cors());
 app.use(express.json());
 
@@ -33,7 +101,9 @@ app.get('/api/health', (req, res) => {
 // Create room
 app.post('/api/rooms', (req, res) => {
   try {
-    const { hostName = 'Host', password = null, roomName = null } = req.body || {};
+    const hostName = cleanText(req.body?.hostName || 'Host', 60) || 'Host';
+    const roomName = cleanText(req.body?.roomName || '', 100) || null;
+    const password = cleanPassword(req.body?.password);
     const roomId = uuidv4().slice(0, 8);
     createRoom(roomId, hostName, null, password, roomName);
     res.status(201).json({
@@ -82,14 +152,25 @@ app.get('/api/rooms/:roomId/participants', (req, res) => {
   res.json(participants);
 });
 
-// Recording endpoints
+// Room attendance log (host-gated; in-app download uses socket 'get-attendance')
+app.get('/api/rooms/:roomId/attendance', (req, res) => {
+  const room = requireRoomHost(req, res, req.params.roomId);
+  if (!room) return;
+  res.json({ attendance: getAttendance(req.params.roomId) });
+});
+
+// Recording endpoints (host-gated via x-host-id; the in-app flow uses socket events which check socket.data.isHost)
 app.post('/api/rooms/:roomId/recording/start', (req, res) => {
+  const room = requireRoomHost(req, res, req.params.roomId);
+  if (!room) return;
   const result = recording.startRecording(req.params.roomId);
   if (result.error) return res.status(404).json(result);
   res.json(result);
 });
 
 app.post('/api/rooms/:roomId/recording/stop', (req, res) => {
+  const room = requireRoomHost(req, res, req.params.roomId);
+  if (!room) return;
   const result = recording.stopRecording(req.params.roomId);
   if (result.error) return res.status(404).json(result);
   res.json(result);
@@ -116,23 +197,32 @@ io.on('connection', (socket) => {
   socket.data.roomId = null;
   socket.data.displayName = null;
   socket.data.isHost = false;
+  socket.data.isAdmin = false;
 
   // --- Room management events ---
 
   // Create a new room via socket
-  socket.on('create-room', ({ displayName = 'Host', password = null, roomName = null } = {}, callback) => {
+  socket.on('create-room', ({ displayName = 'Host', password = null, roomName = null, isAdmin = false } = {}, callback) => {
+    const cleanName = cleanText(displayName, 60) || 'Host';
+    const cleanRoomName = cleanText(roomName, 100) || null;
+    const cleanPwd = cleanPassword(password);
     const roomId = uuidv4().slice(0, 8);
-    const room = createRoom(roomId, displayName, socket.id, password, roomName);
+    const room = createRoom(roomId, cleanName, socket.id, cleanPwd, cleanRoomName);
     socket.data.roomId = roomId;
-    socket.data.displayName = displayName;
+    socket.data.displayName = cleanName;
     socket.data.isHost = true;
+    socket.data.isAdmin = Boolean(isAdmin);
     socket.join(roomId);
-    socket.emit('room-created', { roomId, roomName: room.name, hasPassword: Boolean(password) });
-    if (typeof callback === 'function') callback({ success: true, roomId, roomName: room.name, hasPassword: Boolean(password) });
+    socket.emit('room-created', { roomId, roomName: room.name, hasPassword: Boolean(cleanPwd) });
+    socket.emit('attendance-updated', { attendance: getAttendance(roomId) });
+    if (typeof callback === 'function') callback({ success: true, roomId, roomName: room.name, hasPassword: Boolean(cleanPwd) });
   });
 
   // Join an existing room
-  socket.on('join-room', ({ roomId, displayName = 'Guest', password = null }, callback) => {
+  socket.on('join-room', ({ roomId, displayName = 'Guest', password = null, isAdmin = false }, callback) => {
+    const cleanName = cleanText(displayName, 60) || 'Guest';
+    const cleanPwd = cleanPassword(password);
+
     const room = getRoom(roomId);
     if (!room) {
       socket.emit('error-message', { message: 'Room not found' });
@@ -146,27 +236,46 @@ io.on('connection', (socket) => {
       return;
     }
 
-    if (roomHasPassword(room) && !verifyPassword(room, password)) {
+    const ip = clientIp(socket);
+    if (roomHasPassword(room) && isRateLimited(ip)) {
+      const message = 'Too many failed attempts. Try again in 15 minutes.';
+      socket.emit('error-message', { message });
+      if (typeof callback === 'function') callback({ success: false, error: message, code: 'RATE_LIMITED' });
+      return;
+    }
+
+    if (roomHasPassword(room) && !verifyPassword(room, cleanPwd)) {
+      recordFailedAttempt(ip);
       const message = 'Incorrect meeting password';
       socket.emit('error-message', { message });
       if (typeof callback === 'function') callback({ success: false, error: message, code: 'WRONG_PASSWORD' });
       return;
     }
+    clearAttempts(ip);
 
-    const isHost = (room.hostId === socket.id);
-    const participant = joinRoom(roomId, {
-      socketId: socket.id,
-      userId: uuidv4(),
-      displayName,
-      isHost: isHost || room.participants.size === 0,
-      isMuted: false,
-      isVideoOff: false,
-      isScreenSharing: false
-    });
+    let participant;
+    try {
+      const isHost = (room.hostId === socket.id);
+      participant = joinRoom(roomId, {
+        socketId: socket.id,
+        userId: uuidv4(),
+        displayName: cleanName,
+        isHost: isHost || room.participants.size === 0,
+        isMuted: false,
+        isVideoOff: false,
+        isScreenSharing: false
+      });
+    } catch (error) {
+      const message = error.message || 'Unable to join room';
+      socket.emit('error-message', { message });
+      if (typeof callback === 'function') callback({ success: false, error: message });
+      return;
+    }
 
     socket.data.roomId = roomId;
-    socket.data.displayName = displayName;
+    socket.data.displayName = cleanName;
     socket.data.isHost = participant.isHost;
+    socket.data.isAdmin = Boolean(isAdmin);
     socket.join(roomId);
 
     // Notify existing participants
@@ -196,7 +305,7 @@ io.on('connection', (socket) => {
       participant: {
         socketId: socket.id,
         userId: participant.userId,
-        displayName,
+        displayName: cleanName,
         isHost: participant.isHost,
         isMuted: false,
         isVideoOff: false,
@@ -205,12 +314,27 @@ io.on('connection', (socket) => {
     });
 
     console.log(`[+] ${displayName} joined room ${roomId}`);
+    io.to(roomId).emit('attendance-updated', { attendance: getAttendance(roomId) });
     if (typeof callback === 'function') callback({ success: true, isHost: participant.isHost });
   });
 
   // Leave room
   socket.on('leave-room', () => {
     leaveCurrentRoom(socket);
+  });
+
+  // Attendance download (host or admin only)
+  socket.on('get-attendance', (callback) => {
+    const room = getRoom(socket.data.roomId);
+    if (!room) {
+      if (typeof callback === 'function') callback({ success: false, error: 'ROOM_NOT_FOUND' });
+      return;
+    }
+    if (!socket.data.isHost && !socket.data.isAdmin) {
+      if (typeof callback === 'function') callback({ success: false, error: 'FORBIDDEN' });
+      return;
+    }
+    if (typeof callback === 'function') callback({ success: true, attendance: getAttendance(room.id) });
   });
 
   // Handle disconnect
@@ -228,24 +352,23 @@ io.on('connection', (socket) => {
       const wasHost = room.participants.get(socket.id)?.isHost || false;
       leaveRoom(roomId, socket.id);
 
+      if (wasHost && room.hostId) {
+        // leaveRoom() reassigned room.hostId - mirror it on the successor's socket
+        // because host-gated handlers check socket.data.isHost.
+        const successor = io.sockets.sockets.get(room.hostId);
+        if (successor) successor.data.isHost = true;
+      }
+
       // Notify everyone else in the room
       io.to(roomId).emit('participant-left', {
         socketId: socket.id,
         roomId,
         newHost: room.hostId
       });
+      io.to(roomId).emit('attendance-updated', { attendance: getAttendance(roomId) });
 
       console.log(`[-] ${displayName || socket.id} left room ${roomId}`);
-
-      // If room is empty, schedule cleanup
-      if (room.participants.size === 0) {
-        setTimeout(() => {
-          const r = getRoom(roomId);
-          if (r && r.participants.size === 0) {
-            // Room cleanup handled by rooms.js
-          }
-        }, 300000); // 5 min
-      }
+      // Empty-room cleanup (after 5 min) is handled inside rooms.js
     }
 
     socket.data.roomId = null;
@@ -337,6 +460,15 @@ function stopRecordingSocket(roomId) {
   }
   return result;
 }
+
+// JSON 404 for unknown API routes + final error handler (never leak HTML/stack traces)
+app.use('/api', (req, res) => {
+  res.status(404).json({ error: 'Not found' });
+});
+app.use((err, req, res, next) => {
+  console.error('[Server error]', err);
+  res.status(500).json({ error: 'Internal server error' });
+});
 
 server.listen(PORT, () => {
   console.log(`\n🚀 Webinar Server running on http://localhost:${PORT}`);

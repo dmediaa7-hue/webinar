@@ -4,6 +4,7 @@ import {
   MicOff,
   Video,
   VideoOff,
+  SwitchCamera,
   MonitorUp,
   MonitorDown,
   MessageSquare,
@@ -20,7 +21,9 @@ export default function MeetingControls({
   activePanel,
   onToggleAudio,
   onToggleVideo,
+  onFlipCamera,
   onToggleScreenShare,
+  onToggleRecording,
   onToggleChat,
   onToggleParticipants,
   onLeave
@@ -54,6 +57,15 @@ export default function MeetingControls({
           {isVideoOff ? <VideoOff size={20} /> : <Video size={20} />}
         </button>
 
+        {/* Flip camera */}
+        <button
+          onClick={onFlipCamera}
+          className="p-3 rounded-lg transition-all duration-200 bg-meeting-card hover:bg-white/10"
+          title="Flip camera"
+        >
+          <SwitchCamera size={20} />
+        </button>
+
         {/* Screen share */}
         <button
           onClick={onToggleScreenShare}
@@ -70,12 +82,13 @@ export default function MeetingControls({
         {/* Separator */}
         <div className="w-px h-6 bg-meeting-border mx-1" />
 
-        {/* Recording indicator (visual only - server simulates) */}
+        {/* Recording */}
         <button
+          onClick={onToggleRecording}
           className={`p-3 rounded-lg transition-all duration-200 ${
             isRecording ? 'bg-red-600 text-white' : 'bg-meeting-card hover:bg-white/10'
           }`}
-          title={isRecording ? 'Recording' : 'Start recording (simulated)'}
+          title={isRecording ? 'Stop recording' : 'Start recording'}
         >
           <CircleDot size={20} className={isRecording ? 'recording-pulse' : ''} />
         </button>

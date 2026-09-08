@@ -21,6 +21,13 @@ export function useSocket() {
 
     // Set up all event listeners
     const setupListeners = () => {
+      socket.on('connect', () => {
+        store.getState().setMySocketId(socket.id);
+      });
+      if (socket.connected) {
+        store.getState().setMySocketId(socket.id);
+      }
+
       // Room events
       socket.on(EVENTS.ROOM_JOINED, ({ roomId, roomName, participants, isHost, settings }) => {
         store.getState().setRoom(roomId);
@@ -45,11 +52,17 @@ export function useSocket() {
         webRTC.createPeer(participant.socketId, false);
       });
 
-      socket.on(EVENTS.PARTICIPANT_LEFT, ({ socketId }) => {
+      socket.on(EVENTS.PARTICIPANT_LEFT, ({ socketId, newHost }) => {
         console.log('[Socket] Participant left:', socketId);
         store.getState().removeParticipant(socketId);
         store.getState().removePeer(socketId);
         store.getState().removeTypingUser(socketId);
+        // If the host left, the successor (first remaining participant) takes over
+        if (newHost) {
+          console.log('[Socket] New host:', newHost);
+          store.getState().updateParticipant(newHost, { isHost: true });
+          store.getState().setIsHost(newHost === socket.id);
+        }
       });
 
       // Signaling events
@@ -141,6 +154,10 @@ export function useSocket() {
         store.getState().setIsRecording(false);
       });
 
+      socket.on('attendance-updated', ({ attendance }) => {
+        store.getState().setAttendance(attendance);
+      });
+
       socket.on('disconnect', () => {
         console.log('[Socket] Disconnected from server');
       });
@@ -150,6 +167,7 @@ export function useSocket() {
 
     return () => {
       // Cleanup listeners
+      socket.off('connect');
       socket.off(EVENTS.ROOM_JOINED);
       socket.off(EVENTS.PARTICIPANT_JOINED);
       socket.off(EVENTS.PARTICIPANT_LEFT);
@@ -169,6 +187,7 @@ export function useSocket() {
       socket.off(EVENTS.ERROR);
       socket.off(EVENTS.RECORDING_STARTED);
       socket.off(EVENTS.RECORDING_STOPPED);
+      socket.off('attendance-updated');
     };
   }, []);
 
@@ -184,8 +203,9 @@ const handleKicked = () => {
 
 // Helper methods for actions
 export function createRoom(displayName, password = null, roomName = null) {
+  const { isLoggedIn, username } = useStore.getState();
   return new Promise((resolve, reject) => {
-    socket.emit(EVENTS.CREATE_ROOM, { displayName, password, roomName }, (response) => {
+    socket.emit(EVENTS.CREATE_ROOM, { displayName, password, roomName, isAdmin: isLoggedIn && username === 'Admin' }, (response) => {
       if (response?.success) {
         resolve({ roomId: response.roomId, roomName: response.roomName, hasPassword: Boolean(response.hasPassword) });
       } else {
@@ -196,8 +216,9 @@ export function createRoom(displayName, password = null, roomName = null) {
 }
 
 export function joinRoom(roomId, displayName, password = null) {
+  const { isLoggedIn, username } = useStore.getState();
   return new Promise((resolve, reject) => {
-    socket.emit(EVENTS.JOIN_ROOM, { roomId, displayName, password }, (response) => {
+    socket.emit(EVENTS.JOIN_ROOM, { roomId, displayName, password, isAdmin: isLoggedIn && username === 'Admin' }, (response) => {
       if (response?.success) {
         resolve(response);
       } else {
@@ -258,6 +279,20 @@ export function kickParticipant(targetId) {
 
 export function lockRoom(isLocked) {
   socket.emit(EVENTS.LOCK_ROOM, { isLocked });
+}
+
+export function startRecording() {
+  socket.emit(EVENTS.RECORDING_START);
+}
+
+export function stopRecording() {
+  socket.emit(EVENTS.RECORDING_STOP);
+}
+
+export function getAttendance() {
+  return new Promise((resolve) => {
+    socket.emit('get-attendance', (response) => resolve(response));
+  });
 }
 
 export default socket;

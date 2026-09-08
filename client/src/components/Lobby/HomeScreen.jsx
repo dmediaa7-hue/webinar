@@ -137,7 +137,7 @@ export default function HomeScreen() {
   };
 
   return (
-    <div className="min-h-screen bg-meeting-bg flex flex-col">
+    <div className="app-screen-min bg-meeting-bg flex flex-col">
       <header className="px-8 py-5 flex items-center gap-2">
         <Video className="text-primary" size={28} />
         <h1 className="text-2xl font-bold">Webinar</h1>

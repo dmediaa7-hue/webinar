@@ -46,7 +46,7 @@ export default function LoginScreen() {
   };
 
   return (
-    <div className="min-h-screen bg-meeting-bg flex flex-col items-center justify-center px-4">
+    <div className="app-screen-min bg-meeting-bg flex flex-col items-center justify-center px-4">
       <div className="w-full max-w-sm space-y-6">
         {/* Brand */}
         <div className="text-center">

@@ -7,10 +7,18 @@ const { getRoom, getParticipant, updateParticipant } = require('./rooms');
  * @param {import('socket.io').Socket} socket
  */
 function handleSignaling(io, socket) {
+  // Target socket must be in the SAME room as the sender - prevents cross-room
+  // signaling injection and relay spam to arbitrary socket ids.
+  function isSameRoom(targetId) {
+    const room = getRoom(socket.data.roomId);
+    if (!room) return false;
+    const target = io.sockets.sockets.get(targetId);
+    return Boolean(target && target.data.roomId === room.id);
+  }
+
   // Relay SDP offer to target peer
   socket.on('offer', ({ targetId, sdp, type = 'video' }) => {
-    const room = getRoom(socket.data.roomId);
-    if (!room) return;
+    if (!isSameRoom(targetId)) return;
 
     // Forward to the target socket
     io.to(targetId).emit('offer', {
@@ -23,8 +31,7 @@ function handleSignaling(io, socket) {
 
   // Relay SDP answer to target peer
   socket.on('answer', ({ targetId, sdp }) => {
-    const room = getRoom(socket.data.roomId);
-    if (!room) return;
+    if (!isSameRoom(targetId)) return;
 
     io.to(targetId).emit('answer', {
       from: socket.id,
@@ -34,8 +41,7 @@ function handleSignaling(io, socket) {
 
   // Relay ICE candidate to target peer
   socket.on('ice-candidate', ({ targetId, candidate }) => {
-    const room = getRoom(socket.data.roomId);
-    if (!room) return;
+    if (!isSameRoom(targetId)) return;
 
     io.to(targetId).emit('ice-candidate', {
       from: socket.id,

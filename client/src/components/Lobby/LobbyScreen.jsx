@@ -8,6 +8,7 @@ import useStore from '../../store/useStore';
 export default function LobbyScreen() {
   const navigate = useNavigate();
   const videoRef = useRef(null);
+  const streamRef = useRef(null);
   const [localStream, setLocalStream] = useState(null);
   const [deviceError, setDeviceError] = useState('');
 
@@ -17,6 +18,7 @@ export default function LobbyScreen() {
     const initMedia = async () => {
       const stream = await startMedia();
       if (stream) {
+        streamRef.current = stream;
         setLocalStream(stream);
         useStore.getState().setLocalStream(stream);
       } else {
@@ -26,9 +28,10 @@ export default function LobbyScreen() {
     initMedia();
 
     return () => {
-      if (localStream) {
-        stopStream(localStream);
+      if (streamRef.current) {
+        stopStream(streamRef.current);
         useStore.getState().setLocalStream(null);
+        streamRef.current = null;
       }
     };
   }, []);
@@ -47,7 +50,7 @@ export default function LobbyScreen() {
 
   if (deviceError) {
     return (
-      <div className="min-h-screen bg-meeting-bg flex items-center justify-center p-4">
+      <div className="app-screen-min bg-meeting-bg flex items-center justify-center p-4">
         <div className="text-center space-y-4 max-w-md">
           <div className="text-6xl">📷</div>
           <h1 className="text-2xl font-bold">Camera/Mic Access Needed</h1>
@@ -63,7 +66,7 @@ export default function LobbyScreen() {
   }
 
   return (
-    <div className="min-h-screen bg-meeting-bg flex flex-col">
+    <div className="app-screen-min bg-meeting-bg flex flex-col">
       {/* Header */}
       <header className="px-8 py-4 flex items-center gap-3">
         <button

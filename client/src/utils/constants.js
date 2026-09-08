@@ -61,7 +61,9 @@ export const EVENTS = {
   FORCE_MUTE: 'force-mute',
   ERROR: 'error-message',
   RECORDING_STARTED: 'recording-started',
-  RECORDING_STOPPED: 'recording-stopped'
+  RECORDING_STOPPED: 'recording-stopped',
+  RECORDING_START: 'start-recording',
+  RECORDING_STOP: 'stop-recording'
 };
 
 // Media constraints for camera/mic

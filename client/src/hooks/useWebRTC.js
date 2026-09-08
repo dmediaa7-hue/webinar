@@ -64,7 +64,13 @@ export function useWebRTC(socket) {
 
     // Handle errors
     peer.on('error', (err) => {
-      console.error('[WebRTC] Peer error:', err.message, 'for', socketId);
+      // "User-Initiated Abort" fires whenever a peer is intentionally destroyed
+      // (leaving the meeting, participant disconnects, page closed) - normal.
+      if (err.message && err.message.startsWith('User-Initiated Abort')) {
+        console.log('[WebRTC] Peer closed for', socketId);
+      } else {
+        console.error('[WebRTC] Peer error:', err.message, 'for', socketId);
+      }
       cleanupPeer(socketId);
     });
 
@@ -134,13 +140,6 @@ export function useWebRTC(socket) {
   }, []);
 
   /**
-   * Remove screen share peers (separate handling)
-   */
-  const removePeer = useCallback((socketId) => {
-    cleanupPeer(socketId);
-  }, [cleanupPeer]);
-
-  /**
    * Clean up all peers
    */
   const cleanupAllPeers = useCallback(() => {
@@ -151,15 +150,20 @@ export function useWebRTC(socket) {
   }, []);
 
   /**
-   * Replace local stream (for screen share toggling)
-   * This adds the screen share stream to all existing peers
+   * Replace the local stream sent to all peers (used for screen sharing).
+   * The previously attached stream is removed first so remote peers get a
+   * clean swap instead of two simultaneous streams.
    */
   const replaceLocalStream = useCallback((stream) => {
+    const previous = useStore.getState().localStream;
     useStore.getState().setLocalStream(stream);
-    
+
     peersRef.current.forEach((peer, socketId) => {
       if (peer && !peer.destroyed) {
         try {
+          if (previous && previous !== stream) {
+            peer.removeStream(previous);
+          }
           peer.addStream(stream);
         } catch (e) {
           console.error('[WebRTC] Failed to replace stream for peer', socketId, e);
@@ -174,7 +178,6 @@ export function useWebRTC(socket) {
     handleAnswer,
     handleIceCandidate,
     cleanupPeer,
-    removePeer,
     cleanupAllPeers,
     replaceLocalStream
   };

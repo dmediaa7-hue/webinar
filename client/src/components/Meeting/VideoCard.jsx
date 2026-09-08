@@ -7,18 +7,23 @@ export default function VideoCard({ participant, isLocal, localVideoRef, isActiv
   const { displayName, stream } = participant;
 
   useEffect(() => {
-    // Handle local video
-    if (isLocal && localVideoRef) {
-      // localVideoRef is passed from parent for shared ref
-    } else if (videoRef.current && stream) {
-      videoRef.current.srcObject = stream;
+    const videoEl = isLocal ? localVideoRef?.current : videoRef.current;
+    if (videoEl && stream) {
+      videoEl.srcObject = stream;
     }
   }, [stream, isLocal, localVideoRef]);
 
   const showOffScreen = participant.isVideoOff || !stream;
 
+  // Mirror camera tiles so they behave like a mirror; screen-share streams
+  // (track settings expose displaySurface) must stay unmirrored - text would
+  // be flipped otherwise.
+  const videoTrack = stream?.getVideoTracks?.()[0];
+  const isScreenStream = Boolean(videoTrack?.getSettings?.().displaySurface);
+  const mirrorClass = isScreenStream ? '' : ' mirrored-video';
+
   return (
-    <div className={`video-container h-full w-full relative ${isActiveSpeaker ? 'active-indicator' : ''}`}>
+    <div className={`video-container h-full w-full relative min-h-0 min-w-0 ${isActiveSpeaker ? 'active-indicator' : ''}`}>
       {!showOffScreen && (
         <>
           {/* Local video (muted to prevent echo) */}
@@ -28,14 +33,14 @@ export default function VideoCard({ participant, isLocal, localVideoRef, isActiv
               autoPlay
               playsInline
               muted
-              className="w-full h-full object-cover"
+              className={`w-full h-full object-cover${mirrorClass}`}
             />
           ) : (
             <video
               ref={videoRef}
               autoPlay
               playsInline
-              className="w-full h-full object-cover"
+              className={`w-full h-full object-cover${mirrorClass}`}
             />
           )}
         </>

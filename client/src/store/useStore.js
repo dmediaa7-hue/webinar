@@ -15,6 +15,7 @@ const useStore = create((set, get) => ({
 
   // User state
   displayName: '',
+  mySocketId: null,
   localStream: null,
   isMuted: false,
   isVideoOff: false,
@@ -22,6 +23,9 @@ const useStore = create((set, get) => ({
 
   // Participants: Map of socketId -> { socketId, userId, displayName, isHost, isMuted, isVideoOff, isScreenSharing, stream }
   participants: new Map(),
+
+  // Attendance log: [{ socketId, userId, displayName, isHost, joinedAt, leftAt }]
+  attendance: [],
 
   // Peer connections: Map of socketId -> SimplePeer
   peers: new Map(),
@@ -46,6 +50,7 @@ const useStore = create((set, get) => ({
   setRoomSettings: (roomSettings) => set({ roomSettings }),
   setRoomPassword: (roomPassword) => set({ roomPassword }),
   setDisplayName: (displayName) => set({ displayName }),
+  setMySocketId: (mySocketId) => set({ mySocketId }),
   setLocalStream: (localStream) => set({ localStream }),
   setIsMuted: (isMuted) => set({ isMuted }),
   setIsVideoOff: (isVideoOff) => set({ isVideoOff }),
@@ -107,6 +112,8 @@ const useStore = create((set, get) => ({
   },
 
   clearParticipants: () => set({ participants: new Map() }),
+
+  setAttendance: (attendance) => set({ attendance }),
 
   addPeer: (socketId, peer) => {
     const peers = new Map(get().peers);
@@ -176,6 +183,7 @@ const useStore = create((set, get) => ({
     isVideoOff: false,
     isConnecting: false,
     participants: new Map(),
+    attendance: [],
     peers: new Map(),
     messages: [],
     isTyping: false,

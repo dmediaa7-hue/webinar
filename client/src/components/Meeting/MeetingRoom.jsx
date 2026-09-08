@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import useStore from '../../store/useStore';
-import { useSocket, joinRoom, leaveRoom, roomRequiresPassword, sendChatMessage, sendTyping, toggleAudio, toggleVideo, screenShareStarted, screenShareStopped, muteParticipant, kickParticipant } from '../../hooks/useSocket';
+import { useSocket, joinRoom, leaveRoom, roomRequiresPassword, sendChatMessage, sendTyping, toggleAudio, toggleVideo, screenShareStarted, screenShareStopped, muteParticipant, kickParticipant, startRecording, stopRecording, getAttendance } from '../../hooks/useSocket';
 import { useMedia } from '../../hooks/useMedia';
 import { useWebRTC } from '../../hooks/useWebRTC';
 import { formatTime, EVENTS } from '../../utils/constants';
@@ -11,7 +11,7 @@ import ChatPanel from '../Chat/ChatPanel';
 import ParticipantList from '../Participants/ParticipantList';
 import Modal from '../ui/Modal';
 import Button from '../ui/Button';
-import { Video, Users, Link, Copy, Check, Shield } from 'lucide-react';
+import { Video, Users, Link, Copy, Check, Shield, Maximize2, Minimize2 } from 'lucide-react';
 
 export default function MeetingRoom() {
   const { roomId } = useParams();
@@ -33,12 +33,16 @@ export default function MeetingRoom() {
   const [copied, setCopied] = useState(false);
   const [needsPassword, setNeedsPassword] = useState(false);
   const screenStreamRef = useRef(null);
+  // Snapshot of the camera stream so screen sharing can be reverted to it
+  const cameraStreamRef = useRef(null);
+  const [isFullscreen, setIsFullscreen] = useState(false);
 
   // Media hook
-  const { stream: localStream, startMedia, stopStream, toggleMute, toggleVideo: toggleCam, isMuted, isVideoOff } = useMedia();
+  const { stream: localStream, startMedia, stopStream, toggleMute, toggleVideo: toggleCam, flipCamera, isMuted, isVideoOff } = useMedia();
 
   // WebRTC
   const webRTC = useWebRTC(socket);
+  const { replaceLocalStream } = webRTC;
 
   // Selectors
   const displayName = store((state) => state.displayName) || localStorage.getItem('webinar-name') || 'Guest';
@@ -48,6 +52,8 @@ export default function MeetingRoom() {
   const activePanel = store((state) => state.activePanel);
   const isRecording = store((state) => state.isRecording);
   const storePassword = store((state) => state.roomPassword);
+  const attendance = store((state) => state.attendance);
+  const isAdmin = store((state) => state.isLoggedIn && state.username === 'Admin');
 
   const getInviteLink = () => `${window.location.origin}/meeting/${roomId}`;
 
@@ -66,6 +72,37 @@ export default function MeetingRoom() {
     setTimeout(() => setCopied(false), 2000);
   };
 
+  const requestFullscreen = () => {
+    const el = document.documentElement;
+    if (el.requestFullscreen) return el.requestFullscreen();
+    if (el.webkitRequestFullscreen) return el.webkitRequestFullscreen();
+    return Promise.reject(new Error('Fullscreen not supported'));
+  };
+
+  const exitFullscreen = () => {
+    if (document.exitFullscreen) return document.exitFullscreen();
+    if (document.webkitExitFullscreen) return document.webkitExitFullscreen();
+    return Promise.resolve();
+  };
+
+  const toggleFullscreen = useCallback(() => {
+    if (document.fullscreenElement || document.webkitFullscreenElement) {
+      exitFullscreen().catch(() => {});
+    } else {
+      requestFullscreen().catch(() => {});
+    }
+  }, []);
+
+  useEffect(() => {
+    const onFsChange = () => setIsFullscreen(Boolean(document.fullscreenElement || document.webkitFullscreenElement));
+    document.addEventListener('fullscreenchange', onFsChange);
+    document.addEventListener('webkitfullscreenchange', onFsChange);
+    return () => {
+      document.removeEventListener('fullscreenchange', onFsChange);
+      document.removeEventListener('webkitfullscreenchange', onFsChange);
+    };
+  }, []);
+
   const attemptJoin = async (password = null) => {
     setIsJoining(true);
     setJoinError('');
@@ -80,6 +117,7 @@ export default function MeetingRoom() {
       const name = store.getState().displayName || localStorage.getItem('webinar-name') || 'Guest';
       store.getState().setLocalStream(stream);
       store.getState().setDisplayName(name);
+      cameraStreamRef.current = stream;
 
       const result = await joinRoom(roomId, name, password);
       if (!result?.success) {
@@ -88,6 +126,13 @@ export default function MeetingRoom() {
         return;
       }
       setIsJoining(false);
+      if (
+        window.matchMedia('(pointer: coarse)').matches &&
+        typeof document.documentElement.requestFullscreen === 'function' &&
+        !document.fullscreenElement
+      ) {
+        requestFullscreen().catch(() => {});
+      }
     } catch (err) {
       if (err.code === 'WRONG_PASSWORD') {
         setPasswordError(err.message);
@@ -150,6 +195,7 @@ export default function MeetingRoom() {
       leaveRoom();
       store.getState().resetAll();
       if (socket) webRTC.cleanupAllPeers();
+      exitFullscreen().catch(() => {});
     };
   }, [roomId]);
 
@@ -181,41 +227,100 @@ export default function MeetingRoom() {
     toggleVideo(!isVideoOff);
   }, [isVideoOff, toggleCam]);
 
+  const handleFlipCamera = useCallback(async () => {
+    if (!localStream) return;
+    const result = await flipCamera();
+    if (!result) return;
+    const { oldTrack, newTrack } = result;
+    store.getState().peers.forEach((peer) => {
+      if (peer && !peer.destroyed && typeof peer.replaceTrack === 'function') {
+        try {
+          peer.replaceTrack(oldTrack, newTrack, localStream);
+        } catch (e) {
+          console.warn('[WebRTC] replaceTrack failed for peer', e);
+        }
+      }
+    });
+  }, [localStream, flipCamera]);
+
+  const stopScreenShare = useCallback(() => {
+    if (screenStreamRef.current) {
+      screenStreamRef.current.getTracks().forEach(track => track.stop());
+      screenStreamRef.current = null;
+    }
+    setIsScreenSharing(false);
+    store.getState().setIsScreenSharing(false);
+    store.getState().setScreenShareStream(null);
+    if (cameraStreamRef.current) {
+      replaceLocalStream(cameraStreamRef.current);
+    }
+    screenShareStopped();
+  }, [replaceLocalStream]);
+
   const handleScreenShare = useCallback(async () => {
     if (isScreenSharing) {
-      if (screenStreamRef.current) {
-        screenStreamRef.current.getTracks().forEach(track => track.stop());
-        screenStreamRef.current = null;
-      }
-      setIsScreenSharing(false);
-      store.getState().setIsScreenSharing(false);
-      screenShareStopped();
+      stopScreenShare();
     } else {
       try {
         const screenStream = await navigator.mediaDevices.getDisplayMedia({ video: { cursor: 'always' }, audio: false });
-        screenStream.getVideoTracks()[0].onended = () => {
-          screenStreamRef.current = null;
-          setIsScreenSharing(false);
-          store.getState().setIsScreenSharing(false);
-          screenShareStopped();
-        };
+        screenStream.getVideoTracks()[0].onended = () => stopScreenShare();
         screenStreamRef.current = screenStream;
         setIsScreenSharing(true);
         store.getState().setIsScreenSharing(true);
         store.getState().setScreenShareStream(screenStream);
+        replaceLocalStream(screenStream);
         screenShareStarted();
       } catch (err) {
         // User cancelled screen share
       }
     }
-  }, [isScreenSharing]);
+  }, [isScreenSharing, stopScreenShare]);
 
   const handleLeave = useCallback(() => {
     leaveRoom();
     if (localStream) stopStream(localStream);
     store.getState().resetAll();
+    exitFullscreen().catch(() => {});
     navigate('/');
   }, [localStream, stopStream, navigate]);
+
+  const handleToggleRecording = useCallback(() => {
+    if (!isHost) return;
+    if (isRecording) {
+      stopRecording();
+    } else {
+      startRecording();
+    }
+  }, [isHost, isRecording]);
+
+  const handleDownloadAttendance = useCallback(async () => {
+    const res = await getAttendance();
+    if (!res?.success) {
+      console.warn('[Meeting] Attendance download not allowed:', res?.error);
+      return;
+    }
+    const rows = [
+      ['Name', 'Role', 'Joined', 'Left'],
+      ...res.attendance.map(a => [
+        a.displayName,
+        a.isHost ? 'Host' : 'Participant',
+        formatTime(a.joinedAt),
+        a.leftAt ? formatTime(a.leftAt) : 'Still present'
+      ])
+    ];
+    const csv = rows
+      .map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(','))
+      .join('\r\n');
+    const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `attendance-${roomId}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }, [roomId]);
 
   const togglePanel = (panel) => {
     store.getState().setActivePanel(activePanel === panel ? 'none' : panel);
@@ -226,6 +331,8 @@ export default function MeetingRoom() {
   const handleMuteParticipant = (socketId) => muteParticipant(socketId);
   const handleKickParticipant = (socketId) => kickParticipant(socketId);
 
+  const localJoinedAt = attendance.find(a => a.displayName === displayName && !a.leftAt)?.joinedAt || null;
+
   const localParticipant = {
     socketId: 'local',
     displayName: 'You',
@@ -233,13 +340,14 @@ export default function MeetingRoom() {
     isMuted,
     isVideoOff,
     isScreenSharing,
+    joinedAt: localJoinedAt,
     stream: localStream
   };
 
   // Loading state
   if (isCheckingRoom || isJoining) {
     return (
-      <div className="min-h-screen bg-meeting-bg flex flex-col items-center justify-center">
+      <div className="app-screen-min bg-meeting-bg flex flex-col items-center justify-center">
         <div className="w-12 h-12 border-4 border-primary border-t-transparent rounded-full animate-spin mb-4" />
         <p className="text-gray-300">{isCheckingRoom ? 'Checking meeting...' : 'Connecting to meeting...'}</p>
       </div>
@@ -249,7 +357,7 @@ export default function MeetingRoom() {
   // Name prompt - guests joining via shared link
   if (needsName) {
     return (
-      <div className="min-h-screen bg-meeting-bg flex flex-col items-center justify-center p-4">
+      <div className="app-screen-min bg-meeting-bg flex flex-col items-center justify-center p-4">
         <div className="w-full max-w-sm space-y-6">
           <div className="text-center">
             <div className="w-16 h-16 rounded-full bg-primary/20 flex items-center justify-center mx-auto mb-4">
@@ -294,7 +402,7 @@ export default function MeetingRoom() {
   // Password prompt
   if (showPasswordPrompt) {
     return (
-      <div className="min-h-screen bg-meeting-bg flex flex-col items-center justify-center p-4">
+      <div className="app-screen-min bg-meeting-bg flex flex-col items-center justify-center p-4">
         <div className="w-full max-w-sm space-y-6">
           <div className="text-center">
             <div className="w-16 h-16 rounded-full bg-yellow-900/40 border border-yellow-700/50 flex items-center justify-center mx-auto mb-4">
@@ -342,7 +450,7 @@ export default function MeetingRoom() {
   // Error state
   if (joinError) {
     return (
-      <div className="min-h-screen bg-meeting-bg flex flex-col items-center justify-center p-4">
+      <div className="app-screen-min bg-meeting-bg flex flex-col items-center justify-center p-4">
         <div className="text-6xl mb-6">😕</div>
         <h1 className="text-2xl font-bold mb-4">Cannot Join Meeting</h1>
         <p className="text-red-400 mb-8">{joinError}</p>
@@ -364,7 +472,7 @@ export default function MeetingRoom() {
   const participantCount = allParticipants.length;
 
   return (
-    <div className="h-screen flex flex-col bg-meeting-bg overflow-hidden">
+    <div className="app-screen flex flex-col bg-meeting-bg overflow-hidden">
       {/* Top bar */}
       <div className="px-4 py-2 flex items-center justify-between bg-meeting-surface border-b border-meeting-border h-12">
         <div className="flex items-center gap-3">
@@ -389,6 +497,13 @@ export default function MeetingRoom() {
         </div>
 
         <div className="flex items-center gap-3">
+          <button
+            onClick={toggleFullscreen}
+            className="p-1 rounded hover:bg-white/10 text-gray-400 hover:text-white transition-colors"
+            title={isFullscreen ? 'Exit full screen' : 'Full screen'}
+          >
+            {isFullscreen ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
+          </button>
           <button
             onClick={() => setShowInviteModal(true)}
             className="flex items-center gap-1.5 px-2.5 py-1 rounded bg-meeting-card hover:bg-white/10 text-xs text-gray-300 transition-colors"
@@ -430,9 +545,11 @@ export default function MeetingRoom() {
                 onClose={() => togglePanel('participants')}
                 participants={allParticipants}
                 isHost={isHost}
+                isAdmin={isAdmin}
                 currentSocketId="local"
                 onMuteParticipant={handleMuteParticipant}
                 onKickParticipant={handleKickParticipant}
+                onDownloadAttendance={handleDownloadAttendance}
               />
             )}
           </div>
@@ -447,7 +564,9 @@ export default function MeetingRoom() {
         activePanel={activePanel}
         onToggleAudio={handleToggleMute}
         onToggleVideo={handleToggleVideo}
+        onFlipCamera={handleFlipCamera}
         onToggleScreenShare={handleScreenShare}
+        onToggleRecording={handleToggleRecording}
         onToggleChat={() => togglePanel('chat')}
         onToggleParticipants={() => togglePanel('participants')}
         onLeave={handleLeave}

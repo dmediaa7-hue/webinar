@@ -200,7 +200,12 @@ async function runTest() {
 
   clientA.disconnect();
   clientB.disconnect();
-  process.exit(failed > 0 ? 1 : 0);
+
+  // Let the disconnect handshakes drain before exiting - calling process.exit()
+  // while libuv handles are still closing triggers a UV_HANDLE_CLOSING assertion
+  // on Windows and pollutes otherwise-green test output.
+  process.exitCode = failed > 0 ? 1 : 0;
+  setTimeout(() => process.exit(process.exitCode), 500);
 }
 
 runTest().catch(err => {
