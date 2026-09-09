@@ -152,6 +152,10 @@ export function useSocket() {
         store.getState().setAttendance(attendance);
       });
 
+      socket.on(EVENTS.BREAKOUT_UPDATED, (breakoutState) => {
+        store.getState().setBreakoutState(breakoutState);
+      });
+
       socket.on('disconnect', () => {
         console.log('[Socket] Disconnected from server');
       });
@@ -178,6 +182,7 @@ export function useSocket() {
       socket.off(EVENTS.RECORDING_STARTED);
       socket.off(EVENTS.RECORDING_STOPPED);
       socket.off('attendance-updated');
+      socket.off(EVENTS.BREAKOUT_UPDATED);
     };
   }, []);
 

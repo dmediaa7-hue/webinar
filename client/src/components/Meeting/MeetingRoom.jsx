@@ -15,6 +15,8 @@ import ChatPanel from '../Chat/ChatPanel';
 import ParticipantList from '../Participants/ParticipantList';
 import CaptionsOverlay from '../Captions/CaptionsOverlay';
 import CaptionsPanel from '../Captions/CaptionsPanel';
+import BreakoutPanel from '../Breakout/BreakoutPanel';
+import { breakoutRoomLabel } from '../../utils/breakout';
 import Modal from '../ui/Modal';
 import Button from '../ui/Button';
 import { Video, Users, Link, Copy, Check, Shield, Maximize2, Minimize2, AlertTriangle } from 'lucide-react';
@@ -47,6 +49,7 @@ export default function MeetingRoom() {
   const [isMuted, setIsMuted] = useState(false);
   const [isVideoOff, setIsVideoOff] = useState(false);
   const [techNotice, setTechNotice] = useState('');
+  const [breakoutLabel, setBreakoutLabel] = useState(null);
 
   // LiveKit media layer (token fetch + connect/disconnect)
   const { room: liveKitRoom, isConfigured, connect: connectLiveKit, disconnect: disconnectLiveKit } = useLiveKitRoom();
@@ -65,6 +68,7 @@ export default function MeetingRoom() {
   const storePassword = store((state) => state.roomPassword);
   const isAdmin = store((state) => state.isLoggedIn && state.username === 'Admin');
   const isRoomLocked = store((state) => state.roomSettings?.isLocked);
+  const mySocketId = store((state) => state.mySocketId);
 
   const getInviteLink = () => `${window.location.origin}/join?room=${roomId}`;
 
@@ -402,6 +406,19 @@ export default function MeetingRoom() {
   const handleKickParticipant = (socketId) => kickParticipant(socketId);
   const handleToggleLock = () => lockRoom(!isRoomLocked);
 
+  // The host can move me into a breakout via moveParticipant; LiveKit fires
+  // RoomEvent.Moved with the new room name, so surface which room I'm in.
+  useEffect(() => {
+    const room = liveKitRoom;
+    if (!room) return;
+    const syncBreakoutLabel = () => setBreakoutLabel(breakoutRoomLabel(room.name, roomId));
+    room.on(RoomEvent.Moved, syncBreakoutLabel);
+    syncBreakoutLabel();
+    return () => {
+      room.off(RoomEvent.Moved, syncBreakoutLabel);
+    };
+  }, [liveKitRoom, roomId]);
+
   // Loading state
   if (isCheckingRoom || isJoining) {
     return (
@@ -533,6 +550,11 @@ export default function MeetingRoom() {
           <span className="text-xs text-gray-400 bg-meeting-card px-2 py-1 rounded font-mono">
             {roomId?.toUpperCase()}
           </span>
+          {breakoutLabel && (
+            <span className="text-xs text-primary bg-primary/10 px-2 py-1 rounded font-medium">
+              Breakout {breakoutLabel}
+            </span>
+          )}
           <button
             onClick={() => handleCopyLink(getInviteLink())}
             className="p-1 rounded hover:bg-white/10 text-gray-400 hover:text-white transition-colors"
@@ -620,6 +642,15 @@ export default function MeetingRoom() {
                 onClose={() => togglePanel('captions')}
               />
             )}
+            {activePanel === 'breakouts' && (
+              <BreakoutPanel
+                onClose={() => togglePanel('breakouts')}
+                roomId={roomId}
+                hostId={mySocketId}
+                isHost={isHost}
+                liveKitRoom={liveKitRoom}
+              />
+            )}
           </div>
         )}
       </div>
@@ -642,6 +673,7 @@ export default function MeetingRoom() {
         onToggleChat={() => togglePanel('chat')}
         onToggleParticipants={() => togglePanel('participants')}
         onToggleCaptions={() => togglePanel('captions')}
+        onToggleBreakouts={() => togglePanel('breakouts')}
         onLeave={handleLeave}
       />
 

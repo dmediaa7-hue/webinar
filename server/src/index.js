@@ -10,6 +10,7 @@ const { createRoom, joinRoom, leaveRoom, getRoom, getRooms, updateParticipant, u
 const { handleSignaling } = require('./signaling');
 const { handleChat, getChatHistory } = require('./chat');
 const recording = require('./recording');
+const breakout = require('./breakout');
 const auth = require('./auth');
 const livekit = require('./livekit');
 const livekitAdmin = require('./livekitAdmin');
@@ -156,8 +157,12 @@ app.get('/api/livekit/token', auth.loadUser, async (req, res) => {
     return res.status(403).json({ error: 'Room is locked', code: 'ROOM_LOCKED' });
   }
 
-  // A token grant must be scoped to the exact room name requested.
-  const { token, serverUrl } = await livekit.createJoinToken({ room, identity, name, roomAdmin });
+  // A token grant is normally scoped to the requested room. For the breakout
+  // simulation (task 12) every identity also gets roomCreate:true so the same
+  // token authorizes the destination '{main}:N' room when the host moves a
+  // participant (moveParticipant relocates the existing connection - there is
+  // no re-join with a fresh token). roomAdmin is still derived server-side.
+  const { token, serverUrl } = await livekit.createJoinToken({ room, identity, name, roomAdmin, roomCreate: true });
   res.json({ token, serverUrl, identity, name, roomAdmin });
 });
 
@@ -258,6 +263,79 @@ app.post('/api/rooms/:roomId/recording/stop', async (req, res) => {
 app.get('/api/rooms/:roomId/recording/status', (req, res) => {
   const result = recording.getRecordingStatus(req.params.roomId);
   if (result.error) return res.status(404).json(result);
+  res.json(result);
+});
+
+// --- Breakout room endpoints (host-gated via x-host-id; task 12) ---
+
+// Emit persisted breakout state to the room so client panels refresh.
+function broadcastBreakouts(roomId) {
+  const state = breakout.listBreakouts(roomId);
+  if (!state.error) io.to(roomId).emit('breakout-updated', state);
+}
+
+app.get('/api/rooms/:roomId/breakouts', (req, res) => {
+  const room = requireRoomHost(req, res, req.params.roomId);
+  if (!room) return;
+  const result = breakout.listBreakouts(req.params.roomId);
+  if (result.error) return res.status(404).json(result);
+  res.json(result);
+});
+
+app.post('/api/rooms/:roomId/breakouts', async (req, res) => {
+  const room = requireRoomHost(req, res, req.params.roomId);
+  if (!room) return;
+  const result = await breakout.createBreakout(
+    req.params.roomId,
+    req.body?.name || null,
+    req.headers['x-host-id']
+  );
+  if (result.error) {
+    const status = result.code === 'LIVEKIT_NOT_CONFIGURED' ? 503
+      : result.code === 'DUPLICATE_BREAKOUT' ? 409 : 400;
+    return res.status(status).json(result);
+  }
+  broadcastBreakouts(req.params.roomId);
+  res.status(201).json(result);
+});
+
+app.post('/api/rooms/:roomId/breakouts/assign', async (req, res) => {
+  const room = requireRoomHost(req, res, req.params.roomId);
+  if (!room) return;
+  const { identity, name } = req.body || {};
+  const result = await breakout.assignParticipant(req.params.roomId, identity, name);
+  if (result.error) {
+    const status = result.code === 'LIVEKIT_NOT_CONFIGURED' ? 503
+      : result.code === 'BREAKOUT_NOT_FOUND' ? 404
+      : result.code === 'PARTICIPANT_NOT_FOUND' ? 404 : 400;
+    return res.status(status).json(result);
+  }
+  broadcastBreakouts(req.params.roomId);
+  res.json(result);
+});
+
+app.post('/api/rooms/:roomId/breakouts/return', async (req, res) => {
+  const room = requireRoomHost(req, res, req.params.roomId);
+  if (!room) return;
+  const { identity } = req.body || {};
+  const result = await breakout.returnParticipant(req.params.roomId, identity);
+  if (result.error) {
+    const status = result.code === 'LIVEKIT_NOT_CONFIGURED' ? 503 : 400;
+    return res.status(status).json(result);
+  }
+  broadcastBreakouts(req.params.roomId);
+  res.json(result);
+});
+
+app.post('/api/rooms/:roomId/breakouts/teardown', async (req, res) => {
+  const room = requireRoomHost(req, res, req.params.roomId);
+  if (!room) return;
+  const result = await breakout.teardownBreakouts(req.params.roomId);
+  if (result.error) {
+    const status = result.code === 'LIVEKIT_NOT_CONFIGURED' ? 503 : 400;
+    return res.status(status).json(result);
+  }
+  broadcastBreakouts(req.params.roomId);
   res.json(result);
 });
 

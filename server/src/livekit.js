@@ -26,10 +26,14 @@ function getApiSecret() {
 
 /**
  * Generate a short-lived join token for a room.
- * @param {object} opts { room, identity, name, canPublish, canSubscribe, roomAdmin }
+ * @param {object} opts { room, identity, name, canPublish, canSubscribe, roomAdmin, roomCreate }
+ *   roomCreate: allow joining any room (breakout simulation needs this - a
+ *   moved participant's existing token must authorize the destination room,
+ *   and LiveKit grants are single-room. roomCreate is the documented pattern
+ *   for multi-room/breakout tokens).
  * @returns {Promise<{token:string, serverUrl:string}>}
  */
-async function createJoinToken({ room, identity, name, canPublish = true, canSubscribe = true, roomAdmin = false }) {
+async function createJoinToken({ room, identity, name, canPublish = true, canSubscribe = true, roomAdmin = false, roomCreate = false }) {
   if (!isConfigured()) {
     const err = new Error('LiveKit is not configured');
     err.code = 'LIVEKIT_NOT_CONFIGURED';
@@ -38,7 +42,7 @@ async function createJoinToken({ room, identity, name, canPublish = true, canSub
   const at = new AccessToken(getApiKey(), getApiSecret(), { ttl: '1h' });
   at.identity = String(identity || '');
   at.name = String(name || identity || '');
-  at.addGrant({ room, roomJoin: true, canPublish, canSubscribe, roomAdmin });
+  at.addGrant({ room: roomCreate ? undefined : room, roomJoin: true, canPublish, canSubscribe, roomAdmin, roomCreate });
   return { token: await at.toJwt(), serverUrl: getServerUrl() };
 }
 
@@ -80,6 +84,22 @@ async function moveParticipant(room, identity, destinationRoom) {
 }
 
 /**
+ * Provision a breakout room on the SFU ({main}:N simulation).
+ */
+async function createRoom(name) {
+  const svc = getRoomService();
+  return svc.createRoom({ name });
+}
+
+/**
+ * Tear down a breakout room on the SFU.
+ */
+async function deleteRoom(name) {
+  const svc = getRoomService();
+  return svc.deleteRoom(name);
+}
+
+/**
  * Send a data message to all participants in a room (admin/broadcast).
  */
 async function sendData(room, data, topic) {
@@ -97,5 +117,7 @@ module.exports = {
   muteParticipant,
   removeParticipant,
   moveParticipant,
+  createRoom,
+  deleteRoom,
   sendData
 };

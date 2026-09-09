@@ -62,7 +62,10 @@ export const EVENTS = {
   RECORDING_STARTED: 'recording-started',
   RECORDING_STOPPED: 'recording-stopped',
   RECORDING_START: 'start-recording',
-  RECORDING_STOP: 'stop-recording'
+  RECORDING_STOP: 'stop-recording',
+
+  // Breakout rooms (received when the host changes the layout)
+  BREAKOUT_UPDATED: 'breakout-updated'
 };
 
 // Media constraints for camera/mic

@@ -106,6 +106,28 @@ function initSchema(database) {
       scene_json TEXT,
       updated_at INTEGER NOT NULL
     );
+
+    -- Breakout room config (multi-room simulation, task 12): each breakout is
+    -- a separate LiveKit room named '{main_room}:{breakout_name}'.
+    CREATE TABLE IF NOT EXISTS breakout_rooms (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      main_room TEXT NOT NULL,
+      breakout_name TEXT NOT NULL,
+      livekit_room TEXT NOT NULL,
+      created_by TEXT,
+      created_at INTEGER NOT NULL,
+      UNIQUE(main_room, breakout_name)
+    );
+
+    -- Who is currently assigned to which breakout (one assignment per identity).
+    CREATE TABLE IF NOT EXISTS breakout_assignments (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      main_room TEXT NOT NULL,
+      breakout_name TEXT NOT NULL,
+      participant_identity TEXT NOT NULL,
+      assigned_at INTEGER NOT NULL,
+      UNIQUE(main_room, participant_identity)
+    );
   `);
 }
 

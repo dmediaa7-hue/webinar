@@ -37,12 +37,15 @@ const useStore = create((set, get) => ({
   typingUsers: new Set(),
 
   // UI
-  activePanel: 'none', // 'none' | 'chat' | 'participants' | 'captions'
+  activePanel: 'none', // 'none' | 'chat' | 'participants' | 'captions' | 'breakouts'
   isScreenSharing: false,
   screenShareStream: null,
 
   // Recording
   isRecording: false,
+
+  // Breakout state: { roomId, mainRoom, breakouts: [{name, livekitRoom, identities}], assignments: [{identity, breakoutName, livekitRoom}] } | null
+  breakoutState: null,
 
   // Virtual background choice: { mode: 'none'|'blur'|'image', imagePath: string|null }
   backgroundChoice: null,
@@ -62,6 +65,7 @@ const useStore = create((set, get) => ({
   setIsConnecting: (isConnecting) => set({ isConnecting }),
   setIsRecording: (isRecording) => set({ isRecording }),
   setBackgroundChoice: (backgroundChoice) => set({ backgroundChoice }),
+  setBreakoutState: (breakoutState) => set({ breakoutState }),
 
   login: (username) => {
     localStorage.setItem('webinar-auth', 'true');
@@ -199,7 +203,8 @@ const useStore = create((set, get) => ({
     isScreenSharing: false,
     screenShareStream: null,
     isRecording: false,
-    backgroundChoice: null
+    backgroundChoice: null,
+    breakoutState: null
   })
 }));
 

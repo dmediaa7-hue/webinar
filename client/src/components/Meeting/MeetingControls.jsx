@@ -14,7 +14,8 @@ import {
   PhoneOff,
   CircleDot,
   Lock,
-  Unlock
+  Unlock,
+  Grid2x2
 } from 'lucide-react';
 
 export default function MeetingControls({
@@ -35,6 +36,7 @@ export default function MeetingControls({
   onToggleChat,
   onToggleParticipants,
   onToggleCaptions,
+  onToggleBreakouts,
   onLeave
 }) {
   return (
@@ -162,6 +164,21 @@ export default function MeetingControls({
         >
           {activePanel === 'captions' ? <CaptionsOff size={20} /> : <Captions size={20} />}
         </button>
+
+        {/* Breakouts (host only) */}
+        {isHost && (
+          <button
+            onClick={onToggleBreakouts}
+            className={`p-3 rounded-lg transition-all duration-200 ${
+              activePanel === 'breakouts'
+                ? 'bg-primary hover:bg-primary-dark'
+                : 'bg-meeting-card hover:bg-white/10'
+            }`}
+            title="Breakout rooms"
+          >
+            <Grid2x2 size={20} />
+          </button>
+        )}
 
         {/* Separator */}
         <div className="w-px h-6 bg-meeting-border mx-1" />
