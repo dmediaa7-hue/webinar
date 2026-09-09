@@ -44,7 +44,6 @@ export const EVENTS = {
   SCREEN_SHARE_STOPPED: 'screen-share-stopped',
 
   // Chat
-  CHAT_MESSAGE: 'chat-message',
   TYPING_INDICATOR: 'typing-indicator',
   USER_TYPING: 'user-typing',
 

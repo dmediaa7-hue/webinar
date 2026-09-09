@@ -102,10 +102,6 @@ export function useSocket() {
       });
 
       // Chat events
-      socket.on(EVENTS.CHAT_MESSAGE, (message) => {
-        store.getState().addMessage(message);
-      });
-
       socket.on(EVENTS.USER_TYPING, ({ senderId, isTyping }) => {
         if (isTyping) {
           store.getState().addTypingUser(senderId);
@@ -173,7 +169,6 @@ export function useSocket() {
       socket.off(EVENTS.PARTICIPANT_VIDEO_TOGGLED);
       socket.off(EVENTS.SCREEN_SHARE_STARTED);
       socket.off(EVENTS.SCREEN_SHARE_STOPPED);
-      socket.off(EVENTS.CHAT_MESSAGE);
       socket.off(EVENTS.USER_TYPING);
       socket.off(EVENTS.KICKED);
       socket.off(EVENTS.FORCE_MUTE);
@@ -238,10 +233,6 @@ export async function roomRequiresPassword(roomId) {
 
 export function leaveRoom() {
   socket.emit(EVENTS.LEAVE_ROOM);
-}
-
-export function sendChatMessage(message) {
-  socket.emit(EVENTS.CHAT_MESSAGE, { message });
 }
 
 export function sendTyping(isTyping) {

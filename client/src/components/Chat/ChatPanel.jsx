@@ -1,25 +1,67 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useContext } from 'react';
 import { X, Send } from 'lucide-react';
+import { RoomContext, useDataChannel } from '@livekit/components-react';
 import useStore from '../../store/useStore';
 import { formatTime } from '../../utils/constants';
+import { buildChatMessage, encodeChatMessage, decodeChatMessage } from '../../utils/chatCodec';
 
-export default function ChatPanel({ onClose, onSendMessage, onTyping, currentUserName }) {
+// Bridges the LiveKit 'chat' data channel into the store.
+// Only mounted when a live room exists (useDataChannel requires a room),
+// so the send function is handed up to ChatPanel via onSendReady.
+function ChatChannel({ onMessage, onSendReady }) {
+  const { send } = useDataChannel('chat', onMessage);
+
+  useEffect(() => {
+    onSendReady(send);
+    return () => onSendReady(null);
+  }, [send, onSendReady]);
+
+  return null;
+}
+
+export default function ChatPanel({ onClose, onTyping, currentUserName }) {
   const messages = useStore((state) => state.messages);
   const typingUsers = useStore((state) => state.typingUsers);
+  const mySocketId = useStore((state) => state.mySocketId);
+  const isHost = useStore((state) => state.isHost);
+  const liveKitRoom = useContext(RoomContext);
   const [input, setInput] = useState('');
+  const [hasChannel, setHasChannel] = useState(false);
   const messagesEndRef = useRef(null);
   const typingTimeoutRef = useRef(null);
+  const sendRef = useRef(null);
 
   // Auto-scroll to bottom on new messages
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
+  // Incoming data-channel messages: decode and append to the store.
+  // LiveKit does not echo the sender's own message back, so every
+  // inbound message here originates from another participant.
+  const handleIncoming = useCallback((msg) => {
+    const decoded = decodeChatMessage(msg.payload);
+    if (decoded) useStore.getState().addMessage(decoded);
+  }, []);
+
+  const markSendReady = useCallback((send) => {
+    sendRef.current = send;
+    setHasChannel(Boolean(send));
+  }, []);
+
   const handleSend = () => {
     const trimmed = input.trim();
-    if (!trimmed) return;
+    if (!trimmed || !sendRef.current) return;
 
-    onSendMessage(trimmed);
+    const message = buildChatMessage({
+      sender: currentUserName || 'Guest',
+      senderId: mySocketId,
+      message: trimmed,
+      isHost
+    });
+    // Data channels are not echoed to the sender; add optimistically.
+    useStore.getState().addMessage(message);
+    sendRef.current(encodeChatMessage(message), { reliable: true });
     setInput('');
     onTyping(false);
   };
@@ -46,6 +88,8 @@ export default function ChatPanel({ onClose, onSendMessage, onTyping, currentUse
 
   return (
     <div className="panel h-full">
+      {liveKitRoom && <ChatChannel onMessage={handleIncoming} onSendReady={markSendReady} />}
+
       {/* Header */}
       <div className="px-4 py-3 border-b border-meeting-border flex items-center justify-between">
         <h3 className="font-semibold text-sm">Chat</h3>
@@ -111,13 +155,14 @@ export default function ChatPanel({ onClose, onSendMessage, onTyping, currentUse
             value={input}
             onChange={handleInputChange}
             onKeyDown={handleKeyDown}
-            placeholder={`Message ${currentUserName || 'everyone'}`}
-            className="flex-1 px-3 py-2 bg-meeting-bg border border-meeting-border rounded-lg text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-primary transition-all"
+            disabled={!hasChannel}
+            placeholder={hasChannel ? `Message ${currentUserName || 'everyone'}` : 'Chat requires media connection'}
+            className="flex-1 px-3 py-2 bg-meeting-bg border border-meeting-border rounded-lg text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-primary transition-all disabled:opacity-50"
           />
           <button
             onClick={handleSend}
             className="p-2 bg-primary hover:bg-primary-dark rounded-lg transition-colors disabled:opacity-50"
-            disabled={!input.trim()}
+            disabled={!input.trim() || !hasChannel}
             aria-label="Send message"
           >
             <Send size={16} />

@@ -3,7 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { Room, RoomEvent, Track } from 'livekit-client';
 import { RoomContext, useParticipants } from '@livekit/components-react';
 import useStore from '../../store/useStore';
-import { useSocket, joinRoom, leaveRoom, roomRequiresPassword, sendChatMessage, sendTyping, toggleAudio, toggleVideo, screenShareStarted, screenShareStopped, muteParticipant, kickParticipant, lockRoom, startRecording, stopRecording, getAttendance } from '../../hooks/useSocket';
+import { useSocket, joinRoom, leaveRoom, roomRequiresPassword, sendTyping, toggleAudio, toggleVideo, screenShareStarted, screenShareStopped, muteParticipant, kickParticipant, lockRoom, startRecording, stopRecording, getAttendance } from '../../hooks/useSocket';
 import { useLiveKitRoom } from '../../hooks/useLiveKitRoom';
 import { useLiveKitSync } from '../../hooks/useLiveKitSync';
 import { downloadAttendanceCSV, downloadAttendancePDF } from '../../utils/attendanceExport';
@@ -392,7 +392,6 @@ export default function MeetingRoom() {
     store.getState().setActivePanel(activePanel === panel ? 'none' : panel);
   };
 
-  const handleSendMessage = (message) => sendChatMessage(message);
   const handleTyping = (isTyping) => sendTyping(isTyping);
   const handleMuteParticipant = (socketId) => muteParticipant(socketId);
   const handleKickParticipant = (socketId) => kickParticipant(socketId);
@@ -592,7 +591,6 @@ export default function MeetingRoom() {
             {activePanel === 'chat' && (
               <ChatPanel
                 onClose={() => togglePanel('chat')}
-                onSendMessage={handleSendMessage}
                 onTyping={handleTyping}
                 currentUserName={displayName}
               />
