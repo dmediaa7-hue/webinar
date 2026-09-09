@@ -12,6 +12,7 @@ const { handleChat, getChatHistory } = require('./chat');
 const recording = require('./recording');
 const auth = require('./auth');
 const livekit = require('./livekit');
+const livekitAdmin = require('./livekitAdmin');
 const db = require('./db');
 
 const app = express();
@@ -130,8 +131,10 @@ app.get('/api/auth/me', auth.requireAuth, (req, res) => {
 // --- LiveKit routes ---
 
 // Issue a short-lived join token. `room` and `identity` are required.
-// Optionally `roomAdmin=1` grants host rights on that room.
-app.get('/api/livekit/token', auth.loadUser, (req, res) => {
+// Host rights (`roomAdmin`) are derived server-side from the room's live
+// participant state - the client-supplied `roomAdmin` param is ignored so a
+// guest can never mint an admin token. A locked room refuses non-host joins.
+app.get('/api/livekit/token', auth.loadUser, async (req, res) => {
   const room = String(req.query.room || '').trim();
   const identity = String(req.query.identity || '').trim().slice(0, 100);
   const name = String(req.query.name || req.user?.name || identity || 'Guest').slice(0, 100);
@@ -141,10 +144,21 @@ app.get('/api/livekit/token', auth.loadUser, (req, res) => {
   if (!livekit.isConfigured()) {
     return res.status(403).json({ error: 'LiveKit is not configured', code: 'LIVEKIT_NOT_CONFIGURED' });
   }
-  const roomAdmin = String(req.query.roomAdmin || '') === '1';
+
+  // roomAdmin comes from the room's participant roster (identity === socket.id
+  // for the socket that joined), never from a client flag.
+  const roomState = getRoom(room);
+  const participant = roomState && roomState.participants.get(identity);
+  const roomAdmin = Boolean(participant && participant.isHost);
+
+  // Server-side room lock: non-host joins are refused while locked.
+  if (livekitAdmin.isRoomLocked(room) && !roomAdmin) {
+    return res.status(403).json({ error: 'Room is locked', code: 'ROOM_LOCKED' });
+  }
+
   // A token grant must be scoped to the exact room name requested.
-  const { token, serverUrl } = livekit.createJoinToken({ room, identity, name, roomAdmin });
-  res.json({ token, serverUrl, identity, name });
+  const { token, serverUrl } = await livekit.createJoinToken({ room, identity, name, roomAdmin });
+  res.json({ token, serverUrl, identity, name, roomAdmin });
 });
 
 // Health endpoint: surface whether LiveKit is configured (for the client UI).
@@ -448,6 +462,10 @@ io.on('connection', (socket) => {
       io.to(targetId).emit('force-mute');
       socket.emit('participant-muted', { socketId: targetId, displayName: target.displayName });
     }
+
+    // Mirror the mute on the SFU so the participant's published audio track is
+    // silenced server-side (no-op when LiveKit keys are absent).
+    livekitAdmin.muteParticipant(room.id, targetId);
   });
 
   // Kick a participant (host only)
@@ -467,6 +485,9 @@ io.on('connection', (socket) => {
         }
       }, 500);
     }
+
+    // Sever the SFU session too (no-op when LiveKit keys are absent).
+    livekitAdmin.removeParticipant(room.id, targetId);
   });
 
   // Toggle waiting room (host only)
@@ -478,11 +499,16 @@ io.on('connection', (socket) => {
   });
 
   // Lock room (host only)
-  socket.on('lock-room', ({ isLocked }) => {
+  socket.on('lock-room', ({ isLocked }, ack) => {
     const room = getRoom(socket.data.roomId);
     if (!room || !socket.data.isHost) return;
-    const settings = updateRoomSettings(room.id, { isLocked: Boolean(isLocked) });
-    io.to(room.id).emit('room-locked', { isLocked });
+    const result = livekitAdmin.setRoomLocked(room.id, Boolean(isLocked));
+    if (result.ok) {
+      io.to(room.id).emit('room-locked', { isLocked: result.settings.isLocked });
+      ack?.({ success: true, roomId: room.id, isLocked: result.settings.isLocked });
+    } else {
+      ack?.({ success: false, error: result.error });
+    }
   });
 
   // --- WebRTC signaling ---

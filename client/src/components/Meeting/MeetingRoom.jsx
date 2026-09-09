@@ -3,7 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { Room, RoomEvent, Track } from 'livekit-client';
 import { RoomContext, useParticipants } from '@livekit/components-react';
 import useStore from '../../store/useStore';
-import { useSocket, joinRoom, leaveRoom, roomRequiresPassword, sendChatMessage, sendTyping, toggleAudio, toggleVideo, screenShareStarted, screenShareStopped, muteParticipant, kickParticipant, startRecording, stopRecording, getAttendance } from '../../hooks/useSocket';
+import { useSocket, joinRoom, leaveRoom, roomRequiresPassword, sendChatMessage, sendTyping, toggleAudio, toggleVideo, screenShareStarted, screenShareStopped, muteParticipant, kickParticipant, lockRoom, startRecording, stopRecording, getAttendance } from '../../hooks/useSocket';
 import { useLiveKitRoom } from '../../hooks/useLiveKitRoom';
 import { useLiveKitSync } from '../../hooks/useLiveKitSync';
 import { downloadAttendanceCSV, downloadAttendancePDF } from '../../utils/attendanceExport';
@@ -60,6 +60,7 @@ export default function MeetingRoom() {
   const isRecording = store((state) => state.isRecording);
   const storePassword = store((state) => state.roomPassword);
   const isAdmin = store((state) => state.isLoggedIn && state.username === 'Admin');
+  const isRoomLocked = store((state) => state.roomSettings?.isLocked);
 
   const getInviteLink = () => `${window.location.origin}/meeting/${roomId}`;
 
@@ -395,6 +396,7 @@ export default function MeetingRoom() {
   const handleTyping = (isTyping) => sendTyping(isTyping);
   const handleMuteParticipant = (socketId) => muteParticipant(socketId);
   const handleKickParticipant = (socketId) => kickParticipant(socketId);
+  const handleToggleLock = () => lockRoom(!isRoomLocked);
 
   // Loading state
   if (isCheckingRoom || isJoining) {
@@ -614,12 +616,15 @@ export default function MeetingRoom() {
         isVideoOff={isVideoOff}
         isScreenSharing={isScreenSharing}
         isRecording={isRecording}
+        isRoomLocked={isRoomLocked}
+        isHost={isHost}
         activePanel={activePanel}
         onToggleAudio={handleToggleMute}
         onToggleVideo={handleToggleVideo}
         onFlipCamera={handleFlipCamera}
         onToggleScreenShare={handleScreenShare}
         onToggleRecording={handleToggleRecording}
+        onToggleLock={handleToggleLock}
         onToggleChat={() => togglePanel('chat')}
         onToggleParticipants={() => togglePanel('participants')}
         onLeave={handleLeave}

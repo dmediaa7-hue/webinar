@@ -27,9 +27,9 @@ function getApiSecret() {
 /**
  * Generate a short-lived join token for a room.
  * @param {object} opts { room, identity, name, canPublish, canSubscribe, roomAdmin }
- * @returns {{token:string, serverUrl:string}}
+ * @returns {Promise<{token:string, serverUrl:string}>}
  */
-function createJoinToken({ room, identity, name, canPublish = true, canSubscribe = true, roomAdmin = false }) {
+async function createJoinToken({ room, identity, name, canPublish = true, canSubscribe = true, roomAdmin = false }) {
   if (!isConfigured()) {
     const err = new Error('LiveKit is not configured');
     err.code = 'LIVEKIT_NOT_CONFIGURED';
@@ -39,7 +39,7 @@ function createJoinToken({ room, identity, name, canPublish = true, canSubscribe
   at.identity = String(identity || '');
   at.name = String(name || identity || '');
   at.addGrant({ room, roomJoin: true, canPublish, canSubscribe, roomAdmin });
-  return { token: at.toJwt(), serverUrl: getServerUrl() };
+  return { token: await at.toJwt(), serverUrl: getServerUrl() };
 }
 
 let roomService = null;

@@ -10,7 +10,9 @@ import {
   MessageSquare,
   Users,
   PhoneOff,
-  CircleDot
+  CircleDot,
+  Lock,
+  Unlock
 } from 'lucide-react';
 
 export default function MeetingControls({
@@ -18,12 +20,15 @@ export default function MeetingControls({
   isVideoOff,
   isScreenSharing,
   isRecording,
+  isRoomLocked,
+  isHost,
   activePanel,
   onToggleAudio,
   onToggleVideo,
   onFlipCamera,
   onToggleScreenShare,
   onToggleRecording,
+  onToggleLock,
   onToggleChat,
   onToggleParticipants,
   onLeave
@@ -78,6 +83,21 @@ export default function MeetingControls({
         >
           {isScreenSharing ? <MonitorDown size={20} /> : <MonitorUp size={20} />}
         </button>
+
+        {/* Lock room (host only) */}
+        {isHost && (
+          <button
+            onClick={onToggleLock}
+            className={`p-3 rounded-lg transition-all duration-200 ${
+              isRoomLocked
+                ? 'bg-primary hover:bg-primary-dark'
+                : 'bg-meeting-card hover:bg-white/10'
+            }`}
+            title={isRoomLocked ? 'Unlock room' : 'Lock room'}
+          >
+            {isRoomLocked ? <Unlock size={20} /> : <Lock size={20} />}
+          </button>
+        )}
 
         {/* Separator */}
         <div className="w-px h-6 bg-meeting-border mx-1" />
