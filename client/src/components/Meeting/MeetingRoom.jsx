@@ -12,6 +12,8 @@ import VideoGrid from './VideoGrid';
 import MeetingControls from './MeetingControls';
 import ChatPanel from '../Chat/ChatPanel';
 import ParticipantList from '../Participants/ParticipantList';
+import CaptionsOverlay from '../Captions/CaptionsOverlay';
+import CaptionsPanel from '../Captions/CaptionsPanel';
 import Modal from '../ui/Modal';
 import Button from '../ui/Button';
 import { Video, Users, Link, Copy, Check, Shield, Maximize2, Minimize2, AlertTriangle } from 'lucide-react';
@@ -580,6 +582,10 @@ export default function MeetingRoom() {
               <p className="text-sm text-gray-400">Connecting to media server…</p>
             </div>
           )}
+
+          {activePanel === 'captions' && liveKitRoom && (
+            <CaptionsOverlay room={liveKitRoom} />
+          )}
         </div>
 
         {activePanel !== 'none' && (
@@ -599,6 +605,12 @@ export default function MeetingRoom() {
                 onMuteParticipant={handleMuteParticipant}
                 onKickParticipant={handleKickParticipant}
                 onDownloadAttendance={handleDownloadAttendance}
+              />
+            )}
+            {activePanel === 'captions' && liveKitRoom && (
+              <CaptionsPanel
+                room={liveKitRoom}
+                onClose={() => togglePanel('captions')}
               />
             )}
           </div>
@@ -622,6 +634,7 @@ export default function MeetingRoom() {
         onToggleLock={handleToggleLock}
         onToggleChat={() => togglePanel('chat')}
         onToggleParticipants={() => togglePanel('participants')}
+        onToggleCaptions={() => togglePanel('captions')}
         onLeave={handleLeave}
       />
 

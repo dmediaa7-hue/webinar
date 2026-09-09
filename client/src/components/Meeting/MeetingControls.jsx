@@ -9,6 +9,8 @@ import {
   MonitorDown,
   MessageSquare,
   Users,
+  Captions,
+  CaptionsOff,
   PhoneOff,
   CircleDot,
   Lock,
@@ -32,6 +34,7 @@ export default function MeetingControls({
   onToggleLock,
   onToggleChat,
   onToggleParticipants,
+  onToggleCaptions,
   onLeave
 }) {
   return (
@@ -145,6 +148,19 @@ export default function MeetingControls({
           title="Participants"
         >
           <Users size={20} />
+        </button>
+
+        {/* Captions */}
+        <button
+          onClick={onToggleCaptions}
+          className={`p-3 rounded-lg transition-all duration-200 ${
+            activePanel === 'captions'
+              ? 'bg-primary hover:bg-primary-dark'
+              : 'bg-meeting-card hover:bg-white/10'
+          }`}
+          title={activePanel === 'captions' ? 'Hide captions' : 'Show captions'}
+        >
+          {activePanel === 'captions' ? <CaptionsOff size={20} /> : <Captions size={20} />}
         </button>
 
         {/* Separator */}

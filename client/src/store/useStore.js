@@ -37,7 +37,7 @@ const useStore = create((set, get) => ({
   typingUsers: new Set(),
 
   // UI
-  activePanel: 'none', // 'none' | 'chat' | 'participants'
+  activePanel: 'none', // 'none' | 'chat' | 'participants' | 'captions'
   isScreenSharing: false,
   screenShareStream: null,
 
