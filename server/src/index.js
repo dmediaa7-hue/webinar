@@ -1,6 +1,7 @@
 const express = require('express');
 const http = require('http');
 const cors = require('cors');
+const cookieParser = require('cookie-parser');
 const { Server } = require('socket.io');
 const { v4: uuidv4 } = require('uuid');
 require('dotenv').config();
@@ -9,6 +10,9 @@ const { createRoom, joinRoom, leaveRoom, getRoom, getRooms, updateParticipant, r
 const { handleSignaling } = require('./signaling');
 const { handleChat, getChatHistory } = require('./chat');
 const recording = require('./recording');
+const auth = require('./auth');
+const livekit = require('./livekit');
+const db = require('./db');
 
 const app = express();
 const server = http.createServer(app);
@@ -92,6 +96,61 @@ function requireRoomHost(req, res, roomId) {
 
 app.use(cors());
 app.use(express.json());
+app.use(cookieParser());
+
+// --- Authentication routes ---
+
+app.post('/api/auth/register', (req, res) => {
+  const result = auth.registerUser(req.body || {});
+  if (!result.ok) return res.status(result.status).json({ error: result.error });
+  const { cookieValue, cookieOptions } = auth.createSession(result.user.id);
+  res.cookie(auth.COOKIE_NAME, cookieValue, cookieOptions);
+  res.status(201).json({ user: result.user });
+});
+
+app.post('/api/auth/login', (req, res) => {
+  const { email, password } = req.body || {};
+  const user = auth.verifyCredentials(email, password);
+  if (!user) return res.status(401).json({ error: 'Invalid email or password' });
+  const { cookieValue, cookieOptions } = auth.createSession(user.id);
+  res.cookie(auth.COOKIE_NAME, cookieValue, cookieOptions);
+  res.json({ user });
+});
+
+app.post('/api/auth/logout', (req, res) => {
+  auth.destroySession(req.cookies && req.cookies[auth.COOKIE_NAME]);
+  res.clearCookie(auth.COOKIE_NAME, { path: '/' });
+  res.json({ ok: true });
+});
+
+app.get('/api/auth/me', auth.requireAuth, (req, res) => {
+  res.json({ user: req.user });
+});
+
+// --- LiveKit routes ---
+
+// Issue a short-lived join token. `room` and `identity` are required.
+// Optionally `roomAdmin=1` grants host rights on that room.
+app.get('/api/livekit/token', auth.loadUser, (req, res) => {
+  const room = String(req.query.room || '').trim();
+  const identity = String(req.query.identity || '').trim().slice(0, 100);
+  const name = String(req.query.name || req.user?.name || identity || 'Guest').slice(0, 100);
+  if (!room || !identity) {
+    return res.status(400).json({ error: 'room and identity are required' });
+  }
+  if (!livekit.isConfigured()) {
+    return res.status(403).json({ error: 'LiveKit is not configured', code: 'LIVEKIT_NOT_CONFIGURED' });
+  }
+  const roomAdmin = String(req.query.roomAdmin || '') === '1';
+  // A token grant must be scoped to the exact room name requested.
+  const { token, serverUrl } = livekit.createJoinToken({ room, identity, name, roomAdmin });
+  res.json({ token, serverUrl, identity, name });
+});
+
+// Health endpoint: surface whether LiveKit is configured (for the client UI).
+app.get('/api/livekit/status', (req, res) => {
+  res.json({ configured: livekit.isConfigured() });
+});
 
 // Health check
 app.get('/api/health', (req, res) => {

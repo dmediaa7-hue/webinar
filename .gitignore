@@ -15,6 +15,9 @@ client/dist/
 dev.log
 preview.log
 
+# Local database
+server/data/
+
 # OS / editor
 .DS_Store
 Thumbs.db
