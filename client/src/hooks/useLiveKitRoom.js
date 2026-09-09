@@ -47,10 +47,10 @@ export function useLiveKitRoom() {
 
   /**
    * Connect to a LiveKit room and publish local tracks.
-   * @param {object} opts { roomName, identity, name, roomAdmin, audio, video }
+   * @param {object} opts { roomName, identity, name, roomAdmin, audio, video, videoProcessor }
    * @returns {Promise<Room>}
    */
-  const connect = useCallback(async ({ roomName, identity, name, roomAdmin = false, audio = true, video = true }) => {
+  const connect = useCallback(async ({ roomName, identity, name, roomAdmin = false, audio = true, video = true, videoProcessor = null }) => {
     setIsConnecting(true);
     setError('');
     try {
@@ -72,7 +72,7 @@ export function useLiveKitRoom() {
 
       await room.connect(url, tk);
       await room.localParticipant.setMicrophoneEnabled(audio);
-      await room.localParticipant.setCameraEnabled(video);
+      await room.localParticipant.setCameraEnabled(video, videoProcessor ? { processor: videoProcessor } : undefined);
 
       setIsConnected(true);
       setIsConnecting(false);

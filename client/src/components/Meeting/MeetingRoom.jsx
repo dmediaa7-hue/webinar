@@ -6,6 +6,7 @@ import useStore from '../../store/useStore';
 import { useSocket, joinRoom, leaveRoom, roomRequiresPassword, sendTyping, toggleAudio, toggleVideo, screenShareStarted, screenShareStopped, muteParticipant, kickParticipant, lockRoom, startRecording, stopRecording, getAttendance } from '../../hooks/useSocket';
 import { useLiveKitRoom } from '../../hooks/useLiveKitRoom';
 import { toggleScreenShare } from '../../utils/liveKitShare';
+import { createBackgroundProcessor } from '../../utils/virtualBackgrounds';
 import { useLiveKitSync } from '../../hooks/useLiveKitSync';
 import { downloadAttendanceCSV, downloadAttendancePDF } from '../../utils/attendanceExport';
 import VideoGrid from './VideoGrid';
@@ -214,13 +215,16 @@ export default function MeetingRoom() {
     if (!socket?.id) return;
     liveKitConnectAttemptedRef.current = true;
     const name = state.displayName || localStorage.getItem('webinar-name') || 'Guest';
+    const bg = state.backgroundChoice;
+    const videoProcessor = bg ? createBackgroundProcessor(bg.mode, bg.imagePath) : null;
     connectLiveKit({
       roomName: roomId,
       identity: socket.id,
       name,
       roomAdmin: state.isHost,
       audio: true,
-      video: true
+      video: true,
+      videoProcessor
     }).catch((err) => {
       if (err?.code === 'LIVEKIT_NOT_CONFIGURED') {
         setTechNotice('LiveKit is not configured. Add LIVEKIT_URL, LIVEKIT_API_KEY and LIVEKIT_API_SECRET to server/.env to enable audio and video.');
@@ -322,7 +326,10 @@ export default function MeetingRoom() {
     const room = liveKitRoom;
     if (!room) return;
     const nextOff = !room.localParticipant.isCameraEnabled;
-    room.localParticipant.setCameraEnabled(!nextOff);
+    const bg = store.getState().backgroundChoice;
+    const processor = bg ? createBackgroundProcessor(bg.mode, bg.imagePath) : null;
+    // Re-apply the virtual background whenever the camera track is rebuilt.
+    room.localParticipant.setCameraEnabled(!nextOff, !nextOff && processor ? { processor } : undefined);
     toggleVideo(nextOff);
   }, [liveKitRoom]);
 

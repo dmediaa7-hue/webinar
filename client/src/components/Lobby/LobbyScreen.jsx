@@ -1,9 +1,15 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import Button from '../ui/Button';
 import { usePreviewTracks } from '@livekit/components-react';
 import { Mic, MicOff, Video, VideoOff, ArrowLeft } from 'lucide-react';
 import useStore from '../../store/useStore';
+import {
+  BACKGROUND_MODES,
+  BACKGROUND_OPTIONS,
+  isBackgroundSupported,
+  createBackgroundProcessor
+} from '../../utils/virtualBackgrounds';
 
 /**
  * Live camera preview owned by usePreviewTracks.
@@ -13,13 +19,15 @@ import useStore from '../../store/useStore';
  * switch, enable/disable toggle) and stops them on unmount. No LiveKit token
  * or room is required for the preview.
  */
-function LobbyPreview({ micEnabled, cameraEnabled, micDeviceId, cameraDeviceId, onError, onDevices }) {
+function LobbyPreview({ micEnabled, cameraEnabled, micDeviceId, cameraDeviceId, videoProcessor, onError, onDevices }) {
   const videoRef = useRef(null);
 
   const tracks = usePreviewTracks(
     {
       audio: micEnabled ? (micDeviceId ? { deviceId: micDeviceId } : {}) : false,
-      video: cameraEnabled ? (cameraDeviceId ? { deviceId: cameraDeviceId } : {}) : false
+      video: cameraEnabled
+        ? { deviceId: cameraDeviceId || undefined, ...(videoProcessor ? { processor: videoProcessor } : {}) }
+        : false
     },
     onError
   );
@@ -91,6 +99,14 @@ export default function LobbyScreen() {
   const [devices, setDevices] = useState({ mics: [], cameras: [] });
   const [deviceError, setDeviceError] = useState('');
   const [previewKey, setPreviewKey] = useState(0);
+  const [backgroundSupported] = useState(() => isBackgroundSupported());
+  const [backgroundMode, setBackgroundMode] = useState(BACKGROUND_MODES.NONE);
+  const [backgroundImagePath, setBackgroundImagePath] = useState(null);
+
+  const videoProcessor = useMemo(
+    () => createBackgroundProcessor(backgroundMode, backgroundImagePath),
+    [backgroundMode, backgroundImagePath]
+  );
 
   // Stable callbacks - usePreviewTracks re-runs when `onError` identity changes.
   const handleError = useCallback((err) => {
@@ -104,11 +120,36 @@ export default function LobbyScreen() {
     });
   }, []);
 
+  const handleSelectBackground = (mode) => {
+    setBackgroundMode(mode);
+    // Switching away from an uploaded image releases its object URL.
+    if (mode !== BACKGROUND_MODES.IMAGE && backgroundImagePath) {
+      URL.revokeObjectURL(backgroundImagePath);
+      setBackgroundImagePath(null);
+    }
+  };
+
+  const handleBackgroundImage = (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (backgroundImagePath) URL.revokeObjectURL(backgroundImagePath);
+    const path = URL.createObjectURL(file);
+    setBackgroundImagePath(path);
+    setBackgroundMode(BACKGROUND_MODES.IMAGE);
+    e.target.value = '';
+  };
+
   const handleBack = () => {
     navigate('/');
   };
 
   const handleJoin = () => {
+    // Persist the chosen background so MeetingRoom applies it when publishing.
+    useStore.getState().setBackgroundChoice(
+      backgroundMode !== BACKGROUND_MODES.NONE
+        ? { mode: backgroundMode, imagePath: backgroundImagePath }
+        : null
+    );
     // Publishing happens in MeetingRoom's LiveKit connect; the lobby only
     // previews local tracks, so nothing is published before Join.
     if (hintedRoom) navigate(`/meeting/${hintedRoom}`);
@@ -164,6 +205,7 @@ export default function LobbyScreen() {
             cameraEnabled={cameraEnabled}
             micDeviceId={micDeviceId}
             cameraDeviceId={cameraDeviceId}
+            videoProcessor={videoProcessor}
             onError={handleError}
             onDevices={handleDevices}
           />
@@ -221,6 +263,53 @@ export default function LobbyScreen() {
               </select>
             </div>
           </div>
+
+          {backgroundSupported && (
+            <div className="mt-4 max-w-lg mx-auto">
+              <label className="block text-xs text-gray-400 mb-1">Virtual background</label>
+              <div className="flex flex-wrap items-center gap-2">
+                {BACKGROUND_OPTIONS.map((opt) => (
+                  <button
+                    key={opt.mode}
+                    onClick={() => handleSelectBackground(opt.mode)}
+                    disabled={!cameraEnabled}
+                    className={`px-3 py-1.5 rounded-full text-xs transition-all disabled:opacity-40 disabled:cursor-not-allowed ${
+                      backgroundMode === opt.mode
+                        ? 'bg-primary text-white'
+                        : 'bg-meeting-surface border border-meeting-border text-gray-300 hover:bg-white/10'
+                    }`}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+                {backgroundMode === BACKGROUND_MODES.IMAGE && backgroundImagePath && (
+                  <img
+                    src={backgroundImagePath}
+                    alt="Background"
+                    className="h-8 w-8 rounded-md object-cover border border-meeting-border"
+                  />
+                )}
+                <label
+                  className={`px-3 py-1.5 rounded-full text-xs cursor-pointer transition-all ${
+                    backgroundMode === BACKGROUND_MODES.IMAGE
+                      ? 'bg-primary text-white'
+                      : 'bg-meeting-surface border border-meeting-border text-gray-300 hover:bg-white/10'
+                  } ${!cameraEnabled ? 'opacity-40 pointer-events-none' : ''}`}
+                >
+                  Upload Image
+                  <input
+                    type="file"
+                    accept="image/*"
+                    onChange={handleBackgroundImage}
+                    className="hidden"
+                  />
+                </label>
+              </div>
+              <p className="text-xs text-gray-500 mt-1">
+                Applies to the preview and your published video.
+              </p>
+            </div>
+          )}
 
           <div className="text-center mt-4 text-sm text-gray-400">
             {cameraEnabled ? 'Camera is on' : 'Camera is off'} ·{' '}

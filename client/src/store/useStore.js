@@ -44,6 +44,9 @@ const useStore = create((set, get) => ({
   // Recording
   isRecording: false,
 
+  // Virtual background choice: { mode: 'none'|'blur'|'image', imagePath: string|null }
+  backgroundChoice: null,
+
   // Actions
   setRoom: (roomId) => set({ roomId }),
   setRoomName: (roomName) => set({ roomName }),
@@ -58,6 +61,7 @@ const useStore = create((set, get) => ({
   setIsVideoOff: (isVideoOff) => set({ isVideoOff }),
   setIsConnecting: (isConnecting) => set({ isConnecting }),
   setIsRecording: (isRecording) => set({ isRecording }),
+  setBackgroundChoice: (backgroundChoice) => set({ backgroundChoice }),
 
   login: (username) => {
     localStorage.setItem('webinar-auth', 'true');
@@ -194,7 +198,8 @@ const useStore = create((set, get) => ({
     activePanel: 'none',
     isScreenSharing: false,
     screenShareStream: null,
-    isRecording: false
+    isRecording: false,
+    backgroundChoice: null
   })
 }));
 
