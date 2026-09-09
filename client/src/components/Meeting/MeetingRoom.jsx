@@ -63,7 +63,7 @@ export default function MeetingRoom() {
   const isAdmin = store((state) => state.isLoggedIn && state.username === 'Admin');
   const isRoomLocked = store((state) => state.roomSettings?.isLocked);
 
-  const getInviteLink = () => `${window.location.origin}/meeting/${roomId}`;
+  const getInviteLink = () => `${window.location.origin}/join?room=${roomId}`;
 
   const handleCopyLink = async (text) => {
     try {

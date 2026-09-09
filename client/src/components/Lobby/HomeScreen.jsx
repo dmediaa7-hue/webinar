@@ -37,7 +37,7 @@ export default function HomeScreen() {
   }, []);
 
   const getInviteLink = (roomId) => {
-    return `${window.location.origin}/meeting/${roomId}`;
+    return `${window.location.origin}/join?room=${roomId}`;
   };
 
   const handleCreateRoom = async () => {
@@ -116,7 +116,7 @@ export default function HomeScreen() {
         store.getState().setRoomPassword(createdMeeting.password);
       }
       setShowShareModal(false);
-      navigate(`/meeting/${createdMeeting.roomId}`);
+      navigate(`/join?room=${createdMeeting.roomId}`);
     }
   };
 
@@ -133,7 +133,7 @@ export default function HomeScreen() {
 
     localStorage.setItem('webinar-name', displayName);
     store.getState().setDisplayName(displayName);
-    navigate(`/meeting/${joinRoomId.trim()}`);
+    navigate(`/join?room=${joinRoomId.trim()}`);
   };
 
   return (
