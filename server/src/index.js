@@ -233,19 +233,25 @@ app.get('/api/rooms/:roomId/attendance', (req, res) => {
 });
 
 // Recording endpoints (host-gated via x-host-id; the in-app flow uses socket events which check socket.data.isHost)
-app.post('/api/rooms/:roomId/recording/start', (req, res) => {
+app.post('/api/rooms/:roomId/recording/start', async (req, res) => {
   const room = requireRoomHost(req, res, req.params.roomId);
   if (!room) return;
-  const result = recording.startRecording(req.params.roomId);
-  if (result.error) return res.status(404).json(result);
+  const result = await recording.startRecording(req.params.roomId);
+  if (result.error) {
+    const status = result.code === 'LIVEKIT_NOT_CONFIGURED' ? 503 : 404;
+    return res.status(status).json(result);
+  }
   res.json(result);
 });
 
-app.post('/api/rooms/:roomId/recording/stop', (req, res) => {
+app.post('/api/rooms/:roomId/recording/stop', async (req, res) => {
   const room = requireRoomHost(req, res, req.params.roomId);
   if (!room) return;
-  const result = recording.stopRecording(req.params.roomId);
-  if (result.error) return res.status(404).json(result);
+  const result = await recording.stopRecording(req.params.roomId);
+  if (result.error) {
+    const status = result.code === 'LIVEKIT_NOT_CONFIGURED' ? 503 : 404;
+    return res.status(status).json(result);
+  }
   res.json(result);
 });
 
@@ -518,28 +524,34 @@ io.on('connection', (socket) => {
   handleChat(io, socket);
 
   // --- Recording controls (host only) ---
-  socket.on('start-recording', () => {
+  socket.on('start-recording', async () => {
     if (!socket.data.isHost) return;
-    startRecordingSocket(socket.data.roomId);
+    const result = await startRecordingSocket(socket.data.roomId);
+    if (result.error) {
+      socket.emit('error-message', { message: result.error });
+    }
   });
 
-  socket.on('stop-recording', () => {
+  socket.on('stop-recording', async () => {
     if (!socket.data.isHost) return;
-    stopRecordingSocket(socket.data.roomId);
+    const result = await stopRecordingSocket(socket.data.roomId);
+    if (result.error) {
+      socket.emit('error-message', { message: result.error });
+    }
   });
 });
 
 // Start recording via socket - delegates to recording module and notifies room
-function startRecordingSocket(roomId) {
-  const result = recording.startRecording(roomId);
+async function startRecordingSocket(roomId) {
+  const result = await recording.startRecording(roomId);
   if (!result.error) {
     io.to(roomId).emit('recording-started');
   }
   return result;
 }
 
-function stopRecordingSocket(roomId) {
-  const result = recording.stopRecording(roomId);
+async function stopRecordingSocket(roomId) {
+  const result = await recording.stopRecording(roomId);
   if (!result.error) {
     io.to(roomId).emit('recording-stopped');
   }

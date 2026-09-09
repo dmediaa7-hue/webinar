@@ -20,6 +20,7 @@ export default function MeetingControls({
   isVideoOff,
   isScreenSharing,
   isRecording,
+  isRecordingAvailable = true,
   isRoomLocked,
   isHost,
   activePanel,
@@ -105,10 +106,17 @@ export default function MeetingControls({
         {/* Recording */}
         <button
           onClick={onToggleRecording}
+          disabled={!isRecordingAvailable}
           className={`p-3 rounded-lg transition-all duration-200 ${
-            isRecording ? 'bg-red-600 text-white' : 'bg-meeting-card hover:bg-white/10'
+            !isRecordingAvailable
+              ? 'bg-meeting-card opacity-40 cursor-not-allowed'
+              : isRecording
+                ? 'bg-red-600 text-white'
+                : 'bg-meeting-card hover:bg-white/10'
           }`}
-          title={isRecording ? 'Stop recording' : 'Start recording'}
+          title={!isRecordingAvailable
+            ? 'Recording requires LiveKit configuration'
+            : isRecording ? 'Stop recording' : 'Start recording'}
         >
           <CircleDot size={20} className={isRecording ? 'recording-pulse' : ''} />
         </button>

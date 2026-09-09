@@ -610,6 +610,7 @@ export default function MeetingRoom() {
         isVideoOff={isVideoOff}
         isScreenSharing={isScreenSharing}
         isRecording={isRecording}
+        isRecordingAvailable={isConfigured === true}
         isRoomLocked={isRoomLocked}
         isHost={isHost}
         activePanel={activePanel}

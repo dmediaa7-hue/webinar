@@ -91,6 +91,8 @@ async function sendData(room, data, topic) {
 module.exports = {
   isConfigured,
   getServerUrl,
+  getApiKey,
+  getApiSecret,
   createJoinToken,
   muteParticipant,
   removeParticipant,
