@@ -136,3 +136,16 @@
   0%, 100% { opacity: 1; }
   50% { opacity: 0.4; }
 }
+
+/* Reaction emoji burst on a participant tile (duration matches REACTION_TTL_MS) */
+.reaction-burst {
+  animation: reactionBurst 2.5s ease-out forwards;
+}
+
+@keyframes reactionBurst {
+  0% { transform: scale(0.4) translateY(8px); opacity: 0; }
+  15% { transform: scale(1.15) translateY(0); opacity: 1; }
+  30% { transform: scale(1); }
+  80% { opacity: 1; }
+  100% { transform: scale(1) translateY(-6px); opacity: 0; }
+}

@@ -1,4 +1,10 @@
 import { create } from 'zustand';
+import {
+  capReactions,
+  filterActiveReactions,
+  pushRecentReaction,
+  REACTION_TTL_MS
+} from '../utils/reactionCodec';
 
 const useStore = create((set, get) => ({
   // Room state
@@ -47,6 +53,12 @@ const useStore = create((set, get) => ({
   // Breakout state: { roomId, mainRoom, breakouts: [{name, livekitRoom, identities}], assignments: [{identity, breakoutName, livekitRoom}] } | null
   breakoutState: null,
 
+  // Ephemeral reactions: Map<identity, [{id, type, emoji, sender, senderId, ts}]>
+  // (burst overlay per participant, auto-pruned after REACTION_TTL_MS)
+  reactions: new Map(),
+  // Recent reactions history for the picker: [{emoji, sender, ts}], newest first
+  recentReactions: [],
+
   // Virtual background choice: { mode: 'none'|'blur'|'image', imagePath: string|null }
   backgroundChoice: null,
 
@@ -66,6 +78,27 @@ const useStore = create((set, get) => ({
   setIsRecording: (isRecording) => set({ isRecording }),
   setBackgroundChoice: (backgroundChoice) => set({ backgroundChoice }),
   setBreakoutState: (breakoutState) => set({ breakoutState }),
+
+  addReaction: (reaction) => {
+    const { reactions, recentReactions } = get();
+    const existing = filterActiveReactions(reactions.get(reaction.senderId), Date.now());
+    if (existing.some((r) => r.id === reaction.id)) return;
+
+    const next = new Map(reactions);
+    next.set(reaction.senderId, capReactions([...existing, reaction]));
+    set({
+      reactions: next,
+      recentReactions: pushRecentReaction(recentReactions, reaction.emoji, reaction.sender)
+    });
+
+    setTimeout(() => {
+      const current = filterActiveReactions(get().reactions.get(reaction.senderId), Date.now());
+      if (!current.length) return;
+      const pruned = new Map(get().reactions);
+      pruned.set(reaction.senderId, current);
+      set({ reactions: pruned });
+    }, REACTION_TTL_MS);
+  },
 
   login: (username) => {
     localStorage.setItem('webinar-auth', 'true');
@@ -204,7 +237,9 @@ const useStore = create((set, get) => ({
     screenShareStream: null,
     isRecording: false,
     backgroundChoice: null,
-    breakoutState: null
+    breakoutState: null,
+    reactions: new Map(),
+    recentReactions: []
   })
 }));
 

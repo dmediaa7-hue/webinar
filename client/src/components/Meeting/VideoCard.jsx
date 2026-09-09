@@ -3,11 +3,12 @@ import { Track } from 'livekit-client';
 import { VideoTrack, useLocalParticipant } from '@livekit/components-react';
 import { getInitials } from '../../utils/constants';
 import { MicOff, VideoOff, MonitorUp } from 'lucide-react';
+import { filterActiveReactions } from '../../utils/reactionCodec';
 
 // Renders one LiveKit tile from a TrackReferenceOrPlaceholder. Camera tiles
 // are mirrored; screen-share tiles (sourced from their own Track.Source)
 // stay unmirrored so overlaid text is not flipped.
-export default function VideoCard({ trackRef, isActiveSpeaker }) {
+export default function VideoCard({ trackRef, isActiveSpeaker, reactions = [] }) {
   const { localParticipant } = useLocalParticipant();
   const isLocal = trackRef?.participant?.identity === localParticipant.identity;
   const participant = trackRef?.participant;
@@ -24,6 +25,8 @@ export default function VideoCard({ trackRef, isActiveSpeaker }) {
 
   const mirrorClass = isCamera ? ' mirrored-video' : '';
 
+  const activeReactions = filterActiveReactions(reactions, Date.now());
+
   return (
     <div className={`video-container h-full w-full relative min-h-0 min-w-0 ${isActiveSpeaker ? 'active-indicator' : ''}`}>
       {hasVideo && (
@@ -31,6 +34,17 @@ export default function VideoCard({ trackRef, isActiveSpeaker }) {
           trackRef={trackRef}
           className={`w-full h-full object-cover${mirrorClass}`}
         />
+      )}
+
+      {/* Reaction burst */}
+      {activeReactions.length > 0 && (
+        <div className="absolute top-2 right-2 z-10 flex gap-1 px-2 py-1 bg-black/40 rounded-full backdrop-blur-sm pointer-events-none">
+          {activeReactions.map((reaction) => (
+            <span key={reaction.id} className="reaction-burst text-xl leading-none">
+              {reaction.emoji}
+            </span>
+          ))}
+        </div>
       )}
 
       {/* Avatar fallback when camera track has no published video */}

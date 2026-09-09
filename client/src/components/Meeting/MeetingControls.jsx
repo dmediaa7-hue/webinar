@@ -17,6 +17,7 @@ import {
   Unlock,
   Grid2x2
 } from 'lucide-react';
+import ReactionPicker from './ReactionPicker';
 
 export default function MeetingControls({
   isMuted,
@@ -27,6 +28,7 @@ export default function MeetingControls({
   isRoomLocked,
   isHost,
   activePanel,
+  mediaConnected,
   onToggleAudio,
   onToggleVideo,
   onFlipCamera,
@@ -179,6 +181,9 @@ export default function MeetingControls({
             <Grid2x2 size={20} />
           </button>
         )}
+
+        {/* Reactions (media connected only - data channel needs a LiveKit room) */}
+        {mediaConnected && <ReactionPicker />}
 
         {/* Separator */}
         <div className="w-px h-6 bg-meeting-border mx-1" />

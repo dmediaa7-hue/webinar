@@ -664,6 +664,7 @@ export default function MeetingRoom() {
         isRoomLocked={isRoomLocked}
         isHost={isHost}
         activePanel={activePanel}
+        mediaConnected={Boolean(liveKitRoom)}
         onToggleAudio={handleToggleMute}
         onToggleVideo={handleToggleVideo}
         onFlipCamera={handleFlipCamera}

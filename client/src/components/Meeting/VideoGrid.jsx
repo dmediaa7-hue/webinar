@@ -3,6 +3,7 @@ import { useTracks } from '@livekit/components-react';
 import { Track } from 'livekit-client';
 import VideoCard from './VideoCard';
 import { computeLayout, computeGridMode } from '../../utils/gridLayout';
+import useStore from '../../store/useStore';
 
 // VideoGrid is fully LiveKit-native: camera tiles (with placeholder for
 // audio-only participants) plus any active screen-share tiles. No props — all
@@ -15,6 +16,9 @@ export default function VideoGrid() {
   // plus real screen-share tiles for participants currently sharing.
   const cameraRefs = useTracks([{ source: Track.Source.Camera, withPlaceholder: true }]);
   const screenRefs = useTracks([Track.Source.ScreenShare]);
+
+  // Ephemeral reaction bursts keyed by participant identity (LiveKit).
+  const reactions = useStore((state) => state.reactions);
 
   // ResizeObserver to measure the container and fit tiles without scroll.
   useEffect(() => {
@@ -69,6 +73,7 @@ export default function VideoGrid() {
       key={`${tile.ref.participant.identity}-${tile.ref.source}`}
       trackRef={tile.ref}
       isActiveSpeaker={isActive}
+      reactions={reactions.get(tile.ref.participant.identity) || []}
     />
   );
 
