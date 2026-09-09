@@ -10,12 +10,15 @@ if (!fs.existsSync(DATA_DIR)) {
   fs.mkdirSync(DATA_DIR, { recursive: true });
 }
 
-const db = new Database(path.join(DATA_DIR, 'webinar.db'));
+const DEFAULT_DB_PATH = path.join(DATA_DIR, 'webinar.db');
+
+const db = new Database(DEFAULT_DB_PATH);
 db.pragma('journal_mode = WAL');
 
 // --- Idempotent schema (CREATE TABLE IF NOT EXISTS) ---
-function initSchema() {
-  db.exec(`
+function initSchema(database) {
+  const target = database || db;
+  target.exec(`
     CREATE TABLE IF NOT EXISTS users (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       email TEXT NOT NULL UNIQUE,
@@ -44,6 +47,18 @@ function initSchema() {
       waiting_room_enabled INTEGER NOT NULL DEFAULT 0,
       created_at INTEGER NOT NULL,
       FOREIGN KEY (host_user_id) REFERENCES users(id)
+    );
+
+    -- Persistent room metadata (in-memory socket/participant state stays in rooms.js)
+    CREATE TABLE IF NOT EXISTS rooms (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      host_id TEXT,
+      host_name TEXT NOT NULL,
+      passcode_hash TEXT,
+      waiting_room_enabled INTEGER NOT NULL DEFAULT 0,
+      is_locked INTEGER NOT NULL DEFAULT 0,
+      created_at INTEGER NOT NULL
     );
 
     CREATE TABLE IF NOT EXISTS recordings (
@@ -94,6 +109,23 @@ function initSchema() {
   `);
 }
 
+/**
+ * Open a database (used by unit tests with ':memory:').
+ * Returns a prepared better-sqlite3 instance with the schema applied.
+ */
+function createDatabase(dbPath = DEFAULT_DB_PATH) {
+  if (dbPath !== ':memory:') {
+    const dir = path.dirname(dbPath);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  }
+  const database = new Database(dbPath);
+  if (dbPath !== ':memory:') database.pragma('journal_mode = WAL');
+  initSchema(database);
+  return database;
+}
+
 initSchema();
 
 module.exports = db;
+module.exports.createDatabase = createDatabase;
+module.exports.initSchema = initSchema;

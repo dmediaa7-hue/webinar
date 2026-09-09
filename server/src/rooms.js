@@ -1,7 +1,54 @@
-// Room management - in-memory room storage
+// Room management - in-memory room storage, metadata persisted to SQLite (task 3)
 const crypto = require('crypto');
+const defaultDb = require('./db');
 
 const rooms = new Map();
+
+/** Upsert a room's metadata row into SQLite. */
+function persistRoomMetadata(room, db = defaultDb) {
+  db.prepare(`
+    INSERT INTO rooms (id, name, host_id, host_name, passcode_hash, waiting_room_enabled, is_locked, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      name = excluded.name,
+      host_id = excluded.host_id,
+      host_name = excluded.host_name,
+      passcode_hash = excluded.passcode_hash,
+      waiting_room_enabled = excluded.waiting_room_enabled,
+      is_locked = excluded.is_locked
+  `).run(
+    room.id,
+    room.name,
+    room.hostId || null,
+    room.hostName || '',
+    room.passwordHash || null,
+    room.settings.waitingRoomEnabled ? 1 : 0,
+    room.settings.isLocked ? 1 : 0,
+    room.createdAt
+  );
+}
+
+/** Delete a room's persisted metadata row on cleanup. */
+function removePersistedRoom(roomId, db = defaultDb) {
+  db.prepare('DELETE FROM rooms WHERE id = ?').run(roomId);
+}
+
+/** Read persisted room metadata (id, name, hostName, hasPassword, settings). */
+function getPersistedRoom(roomId, db = defaultDb) {
+  const row = db.prepare('SELECT * FROM rooms WHERE id = ?').get(roomId);
+  if (!row) return null;
+  return {
+    id: row.id,
+    name: row.name,
+    hostName: row.host_name,
+    hasPassword: Boolean(row.passcode_hash),
+    settings: {
+      waitingRoomEnabled: Boolean(row.waiting_room_enabled),
+      isLocked: Boolean(row.is_locked)
+    },
+    createdAt: row.created_at
+  };
+}
 
 /**
  * Create a new room
@@ -10,13 +57,15 @@ const rooms = new Map();
  * @param {string} hostSocketId - Socket ID of the host
  * @param {string|null} password - Optional meeting password
  * @param {string} roomName - Optional meeting name
+ * @param {object} [db] - optional better-sqlite3 handle (defaults to shared one)
  * @returns {object} Room object
  */
-function createRoom(roomId, hostName = 'Host', hostSocketId = null, password = null, roomName = null) {
+function createRoom(roomId, hostName = 'Host', hostSocketId = null, password = null, roomName = null, db = defaultDb) {
   const room = {
     id: roomId,
     name: roomName || hostName + "'s Meeting",
     hostId: hostSocketId,
+    hostName: hostName,
     createdAt: Date.now(),
     participants: new Map(), // socketId -> participant
     attendance: [], // { socketId, userId, displayName, isHost, joinedAt, leftAt }
@@ -53,7 +102,17 @@ function createRoom(roomId, hostName = 'Host', hostSocketId = null, password = n
   }
 
   rooms.set(roomId, room);
+  persistRoomMetadata(room, db);
   return room;
+}
+
+/** Merge settings changes into a room and persist the metadata. */
+function updateRoomSettings(roomId, patch, db = defaultDb) {
+  const room = rooms.get(roomId);
+  if (!room) return null;
+  Object.assign(room.settings, patch);
+  persistRoomMetadata(room, db);
+  return room.settings;
 }
 
 function hashPassword(password) {
@@ -165,6 +224,7 @@ function leaveRoom(roomId, socketId) {
       const r = rooms.get(roomId);
       if (r && r.participants.size === 0) {
         rooms.delete(roomId);
+        removePersistedRoom(roomId);
         console.log(`[🗑] Room ${roomId} cleaned up (empty)`);
       }
     }, 300000);
@@ -227,5 +287,9 @@ module.exports = {
   getParticipant,
   getAttendance,
   roomHasPassword,
-  verifyPassword
+  verifyPassword,
+  updateRoomSettings,
+  persistRoomMetadata,
+  removePersistedRoom,
+  getPersistedRoom
 };

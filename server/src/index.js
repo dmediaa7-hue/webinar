@@ -6,7 +6,7 @@ const { Server } = require('socket.io');
 const { v4: uuidv4 } = require('uuid');
 require('dotenv').config();
 
-const { createRoom, joinRoom, leaveRoom, getRoom, getRooms, updateParticipant, roomHasPassword, verifyPassword, getAttendance } = require('./rooms');
+const { createRoom, joinRoom, leaveRoom, getRoom, getRooms, updateParticipant, updateRoomSettings, roomHasPassword, verifyPassword, getAttendance } = require('./rooms');
 const { handleSignaling } = require('./signaling');
 const { handleChat, getChatHistory } = require('./chat');
 const recording = require('./recording');
@@ -473,15 +473,15 @@ io.on('connection', (socket) => {
   socket.on('toggle-waiting-room', () => {
     const room = getRoom(socket.data.roomId);
     if (!room || !socket.data.isHost) return;
-    room.settings.waitingRoomEnabled = !room.settings.waitingRoomEnabled;
-    io.to(room.id).emit('room-settings-updated', room.settings);
+    const settings = updateRoomSettings(room.id, { waitingRoomEnabled: !room.settings.waitingRoomEnabled });
+    io.to(room.id).emit('room-settings-updated', settings);
   });
 
   // Lock room (host only)
   socket.on('lock-room', ({ isLocked }) => {
     const room = getRoom(socket.data.roomId);
     if (!room || !socket.data.isHost) return;
-    room.settings.isLocked = isLocked;
+    const settings = updateRoomSettings(room.id, { isLocked: Boolean(isLocked) });
     io.to(room.id).emit('room-locked', { isLocked });
   });
 
