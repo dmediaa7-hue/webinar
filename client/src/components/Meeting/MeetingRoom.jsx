@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { Room, RoomEvent, Track } from 'livekit-client';
+import { RoomContext, useParticipants } from '@livekit/components-react';
 import useStore from '../../store/useStore';
 import { useSocket, joinRoom, leaveRoom, roomRequiresPassword, sendChatMessage, sendTyping, toggleAudio, toggleVideo, screenShareStarted, screenShareStopped, muteParticipant, kickParticipant, startRecording, stopRecording, getAttendance } from '../../hooks/useSocket';
 import { useLiveKitRoom } from '../../hooks/useLiveKitRoom';
@@ -13,6 +14,11 @@ import ParticipantList from '../Participants/ParticipantList';
 import Modal from '../ui/Modal';
 import Button from '../ui/Button';
 import { Video, Users, Link, Copy, Check, Shield, Maximize2, Minimize2, AlertTriangle } from 'lucide-react';
+
+function ParticipantCount() {
+  const participants = useParticipants();
+  return <span>{participants.length}</span>;
+}
 
 export default function MeetingRoom() {
   const { roomId } = useParams();
@@ -42,9 +48,6 @@ export default function MeetingRoom() {
   const { room: liveKitRoom, isConfigured, connect: connectLiveKit, disconnect: disconnectLiveKit } = useLiveKitRoom();
   useLiveKitSync(liveKitRoom);
 
-  // Local camera/mic streams built from LiveKit local participant tracks
-  const [localStream, setLocalStream] = useState(null);
-  const localVideoRef = useRef(null);
   // MediaStream holding the local screen-share track (before publishing picks it up)
   const screenStreamRef = useRef(null);
 
@@ -56,7 +59,6 @@ export default function MeetingRoom() {
   const activePanel = store((state) => state.activePanel);
   const isRecording = store((state) => state.isRecording);
   const storePassword = store((state) => state.roomPassword);
-  const attendance = store((state) => state.attendance);
   const isAdmin = store((state) => state.isLoggedIn && state.username === 'Admin');
 
   const getInviteLink = () => `${window.location.origin}/meeting/${roomId}`;
@@ -247,7 +249,6 @@ export default function MeetingRoom() {
       const ms = new MediaStream();
       if (camPub?.track?.mediaStreamTrack) ms.addTrack(camPub.track.mediaStreamTrack);
       if (micPub?.track?.mediaStreamTrack) ms.addTrack(micPub.track.mediaStreamTrack);
-      setLocalStream(ms);
       store.getState().setLocalStream(ms);
     };
 
@@ -304,12 +305,6 @@ export default function MeetingRoom() {
       room.off(RoomEvent.LocalTrackUnpublished, onLocalTrackUnpublished);
     };
   }, [liveKitRoom]);
-
-  useEffect(() => {
-    if (localVideoRef.current && localStream) {
-      localVideoRef.current.srcObject = localStream;
-    }
-  }, [localStream]);
 
   const handleToggleMute = useCallback(() => {
     const room = liveKitRoom;
@@ -400,19 +395,6 @@ export default function MeetingRoom() {
   const handleTyping = (isTyping) => sendTyping(isTyping);
   const handleMuteParticipant = (socketId) => muteParticipant(socketId);
   const handleKickParticipant = (socketId) => kickParticipant(socketId);
-
-  const localJoinedAt = attendance.find(a => a.displayName === displayName && !a.leftAt)?.joinedAt || null;
-
-  const localParticipant = {
-    socketId: 'local',
-    displayName: 'You',
-    isHost,
-    isMuted,
-    isVideoOff,
-    isScreenSharing,
-    joinedAt: localJoinedAt,
-    stream: localStream
-  };
 
   // Loading state
   if (isCheckingRoom || isJoining) {
@@ -534,15 +516,9 @@ export default function MeetingRoom() {
     );
   }
 
-  const allParticipants = [
-    localParticipant,
-    ...Array.from(participants.values()).filter(p => p.socketId !== 'local')
-  ];
-
-  const participantCount = allParticipants.length;
-
   return (
-    <div className="app-screen flex flex-col bg-meeting-bg overflow-hidden">
+    <RoomContext.Provider value={liveKitRoom}>
+      <div className="app-screen flex flex-col bg-meeting-bg overflow-hidden">
       {/* Top bar */}
       <div className="px-4 py-2 flex items-center justify-between bg-meeting-surface border-b border-meeting-border h-12">
         <div className="flex items-center gap-3">
@@ -583,7 +559,7 @@ export default function MeetingRoom() {
           </button>
           <span className="flex items-center gap-1 text-xs text-gray-400">
             <Users size={14} />
-            {participantCount}
+            {liveKitRoom ? <ParticipantCount /> : <span>0</span>}
           </span>
           <span className="w-2 h-2 bg-green-500 rounded-full" />
         </div>
@@ -600,13 +576,12 @@ export default function MeetingRoom() {
                 <p className="text-sm text-gray-400">{techNotice}</p>
               </div>
             </div>
+          ) : liveKitRoom ? (
+            <VideoGrid />
           ) : (
-            <VideoGrid
-              participants={allParticipants}
-              localVideoRef={localVideoRef}
-              isScreenSharing={isScreenSharing}
-              screenStream={screenStreamRef.current}
-            />
+            <div className="h-full flex items-center justify-center">
+              <p className="text-sm text-gray-400">Connecting to media server…</p>
+            </div>
           )}
         </div>
 
@@ -620,13 +595,11 @@ export default function MeetingRoom() {
                 currentUserName={displayName}
               />
             )}
-            {activePanel === 'participants' && (
+            {activePanel === 'participants' && liveKitRoom && (
               <ParticipantList
                 onClose={() => togglePanel('participants')}
-                participants={allParticipants}
                 isHost={isHost}
                 isAdmin={isAdmin}
-                currentSocketId="local"
                 onMuteParticipant={handleMuteParticipant}
                 onKickParticipant={handleKickParticipant}
                 onDownloadAttendance={handleDownloadAttendance}
@@ -711,6 +684,7 @@ export default function MeetingRoom() {
           </div>
         </Modal>
       )}
-    </div>
+      </div>
+    </RoomContext.Provider>
   );
 }
