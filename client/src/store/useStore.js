@@ -47,8 +47,13 @@ const useStore = create((set, get) => ({
   isTyping: false,
   typingUsers: new Set(),
 
+  // Polls (task 15): [{ pollId, question, options, creator, creatorId, createdAt, isClosed, votes: Map<voterId, optionIndex> }]
+  polls: [],
+  // Q&A (task 15): [{ questionId, author, authorId, body, createdAt, upvotes, isAnswered, votes: Map<voterId, delta> }]
+  qaQuestions: [],
+
   // UI
-  activePanel: 'none', // 'none' | 'chat' | 'participants' | 'captions' | 'breakouts'
+  activePanel: 'none', // 'none' | 'chat' | 'participants' | 'captions' | 'breakouts' | 'polls' | 'qa'
   isScreenSharing: false,
   screenShareStream: null,
 
@@ -106,6 +111,124 @@ const useStore = create((set, get) => ({
       pruned.set(reaction.senderId, current);
       set({ reactions: pruned });
     }, REACTION_TTL_MS);
+  },
+
+  /* ---- Polls & Q&A (task 15) ---- */
+
+  // Idempotent data-channel appliers: create dedupes by id; vote replaces the
+  // voter's position in the per-voter Map; votes for unknown/closed polls are
+  // dropped - the panel's REST restore (setPolls) reconciles state on mount.
+  applyPollMessage: (msg) => {
+    const { polls } = get();
+    if (msg.action === 'create') {
+      if (polls.some((p) => p.pollId === msg.pollId)) return;
+      set({
+        polls: [...polls, {
+          pollId: msg.pollId,
+          question: msg.question,
+          options: msg.options,
+          creator: msg.creator,
+          creatorId: msg.creatorId,
+          createdAt: msg.createdAt,
+          isClosed: false,
+          votes: new Map()
+        }]
+      });
+      return;
+    }
+    if (msg.action === 'vote') {
+      set({
+        polls: polls.map((p) => {
+          if (p.pollId !== msg.pollId || p.isClosed) return p;
+          const votes = new Map(p.votes);
+          votes.set(msg.voterId, msg.optionIndex);
+          return { ...p, votes };
+        })
+      });
+      return;
+    }
+    if (msg.action === 'close') {
+      set({
+        polls: polls.map((p) =>
+          p.pollId === msg.pollId ? { ...p, isClosed: true } : p
+        )
+      });
+    }
+  },
+
+  // Idempotent data-channel appliers: ask dedupes by id; vote replaces the
+  // voter's delta, with the score recomputed as the SUM of deltas (mirrors
+  // the server's counter, so refresh-and-revote stays consistent).
+  applyQaMessage: (msg) => {
+    const { qaQuestions } = get();
+    if (msg.action === 'ask') {
+      if (qaQuestions.some((q) => q.questionId === msg.questionId)) return;
+      set({
+        qaQuestions: [...qaQuestions, {
+          questionId: msg.questionId,
+          author: msg.author,
+          authorId: msg.authorId,
+          body: msg.body,
+          createdAt: msg.createdAt,
+          upvotes: 0,
+          isAnswered: false,
+          votes: new Map()
+        }]
+      });
+      return;
+    }
+    if (msg.action === 'vote') {
+      set({
+        qaQuestions: qaQuestions.map((q) => {
+          if (q.questionId !== msg.questionId) return q;
+          const votes = new Map(q.votes);
+          votes.set(msg.voterId, msg.delta);
+          const upvotes = [...votes.values()].reduce((sum, d) => sum + d, 0);
+          return { ...q, votes, upvotes };
+        })
+      });
+      return;
+    }
+    if (msg.action === 'answered') {
+      set({
+        qaQuestions: qaQuestions.map((q) =>
+          q.questionId === msg.questionId ? { ...q, isAnswered: msg.isAnswered } : q
+        )
+      });
+    }
+  },
+
+  // REST restore: replace poll state with the server's durable records.
+  setPolls: (serverPolls) => {
+    set({
+      polls: (serverPolls || []).map((p) => ({
+        pollId: p.id,
+        question: p.question,
+        options: p.options,
+        creator: 'Host',
+        creatorId: p.hostIdentity,
+        createdAt: p.createdAt,
+        isClosed: false,
+        votes: new Map((p.votes || []).map((v) => [v.voterIdentity, v.optionIndex]))
+      }))
+    });
+  },
+
+  // REST restore: replace Q&A state with the server's durable records
+  // (per-voter deltas included so refresh keeps each voter's own position).
+  setQaQuestions: (serverQuestions) => {
+    set({
+      qaQuestions: (serverQuestions || []).map((q) => ({
+        questionId: q.id,
+        author: q.author,
+        authorId: q.authorId,
+        body: q.body,
+        createdAt: q.createdAt,
+        upvotes: q.upvotes,
+        isAnswered: q.isAnswered,
+        votes: new Map((q.votes || []).map((v) => [v.voterIdentity, v.delta]))
+      }))
+    });
   },
 
   login: (username) => {
@@ -250,7 +373,9 @@ const useStore = create((set, get) => ({
     backgroundChoice: null,
     breakoutState: null,
     reactions: new Map(),
-    recentReactions: []
+    recentReactions: [],
+    polls: [],
+    qaQuestions: []
   })
 }));
 

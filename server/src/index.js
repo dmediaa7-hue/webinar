@@ -11,6 +11,7 @@ const { handleSignaling } = require('./signaling');
 const { handleChat, getChatHistory } = require('./chat');
 const recording = require('./recording');
 const breakout = require('./breakout');
+const engagement = require('./engagement');
 const auth = require('./auth');
 const livekit = require('./livekit');
 const livekitAdmin = require('./livekitAdmin');
@@ -351,6 +352,107 @@ app.get('/api/rooms/:roomId/chat', (req, res) => {
   const history = getChatHistory(req.params.roomId);
   if (history.error) return res.status(404).json(history);
   res.json(history);
+});
+
+// --- Polls & Q&A endpoints (task 15) ---
+// Live traffic rides the LiveKit 'poll'/'qa' data channels; these routes keep
+// the durable record (SQLite) so results survive a refresh and the host can
+// download them. Poll creation and "mark answered" are host-gated; votes and
+// questions require the caller to be a current roster participant.
+
+// REST gate: participant actions must come from a socket currently in the room
+// roster (identity === socket.id, same contract as the LiveKit join token).
+function requireRoomParticipant(req, res, roomId) {
+  const room = getRoom(roomId);
+  if (!room) {
+    res.status(404).json({ error: 'Room not found' });
+    return null;
+  }
+  const identity = cleanText(req.body?.identity, 100);
+  if (!identity || !room.participants.has(identity)) {
+    res.status(403).json({ error: 'Forbidden' });
+    return null;
+  }
+  return room;
+}
+
+// Create a poll (host-only, x-host-id gate).
+app.post('/api/rooms/:roomId/polls', (req, res) => {
+  const room = requireRoomHost(req, res, req.params.roomId);
+  if (!room) return;
+  const result = engagement.createPoll({
+    roomName: req.params.roomId,
+    question: req.body?.question,
+    options: req.body?.options,
+    hostIdentity: req.headers['x-host-id']
+  });
+  if (!result.ok) return res.status(400).json({ error: result.error });
+  res.status(201).json({ poll: result.poll });
+});
+
+// Cast / replace a participant's vote (idempotent per voter).
+app.post('/api/rooms/:roomId/polls/:pollId/votes', (req, res) => {
+  const room = requireRoomParticipant(req, res, req.params.roomId);
+  if (!room) return;
+  const result = engagement.recordPollVote({
+    pollId: req.params.pollId,
+    voterIdentity: req.body?.identity,
+    optionIndex: req.body?.optionIndex
+  });
+  if (!result.ok) return res.status(400).json({ error: result.error });
+  res.json({ results: result.results });
+});
+
+// Poll list with tallies (refresh restore / host download; room-scoped).
+app.get('/api/rooms/:roomId/polls', (req, res) => {
+  const room = getRoom(req.params.roomId);
+  if (!room) return res.status(404).json({ error: 'Room not found' });
+  res.json({ polls: engagement.listPolls(req.params.roomId) });
+});
+
+// Ask a Q&A question (participant).
+app.post('/api/rooms/:roomId/qa', (req, res) => {
+  const room = requireRoomParticipant(req, res, req.params.roomId);
+  if (!room) return;
+  const result = engagement.createQuestion({
+    roomName: req.params.roomId,
+    authorIdentity: req.body?.identity,
+    authorName: req.body?.name,
+    body: req.body?.body
+  });
+  if (!result.ok) return res.status(400).json({ error: result.error });
+  res.status(201).json({ question: result.question });
+});
+
+// Vote on a question (participant): delta +1 upvote / -1 downvote / 0 neutral.
+// The net score is the SUM of per-voter deltas.
+app.post('/api/rooms/:roomId/qa/:questionId/vote', (req, res) => {
+  const room = requireRoomParticipant(req, res, req.params.roomId);
+  if (!room) return;
+  const result = engagement.recordQuestionVote({
+    questionId: req.params.questionId,
+    voterIdentity: req.body?.identity,
+    delta: req.body?.delta
+  });
+  const status = result.error === 'QUESTION_NOT_FOUND' ? 404 : 400;
+  if (!result.ok) return res.status(status).json({ error: result.error });
+  res.json({ question: result.question });
+});
+
+// Mark a question answered / unanswered (host-only).
+app.post('/api/rooms/:roomId/qa/:questionId/answered', (req, res) => {
+  const room = requireRoomHost(req, res, req.params.roomId);
+  if (!room) return;
+  const result = engagement.markQuestionAnswered(req.params.questionId, Boolean(req.body?.isAnswered));
+  if (!result.ok) return res.status(404).json({ error: result.error });
+  res.json({ question: result.question });
+});
+
+// Q&A list (refresh restore / host download; room-scoped).
+app.get('/api/rooms/:roomId/qa', (req, res) => {
+  const room = getRoom(req.params.roomId);
+  if (!room) return res.status(404).json({ error: 'Room not found' });
+  res.json({ questions: engagement.listQuestions(req.params.roomId) });
 });
 
 // Socket.io connection handling

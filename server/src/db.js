@@ -100,6 +100,17 @@ function initSchema(database) {
       created_at INTEGER NOT NULL
     );
 
+    -- Per-voter Q&A vote record (delta +1/-1, UNIQUE per voter) so the
+    -- upvotes counter stays accurate across refreshes and re-votes.
+    CREATE TABLE IF NOT EXISTS qa_upvotes (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      question_id TEXT NOT NULL,
+      voter_identity TEXT NOT NULL,
+      delta INTEGER NOT NULL,
+      created_at INTEGER NOT NULL,
+      UNIQUE(question_id, voter_identity)
+    );
+
     CREATE TABLE IF NOT EXISTS whiteboards (
       id TEXT PRIMARY KEY,
       room_name TEXT NOT NULL,

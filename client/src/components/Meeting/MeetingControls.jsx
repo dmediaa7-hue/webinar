@@ -15,7 +15,9 @@ import {
   CircleDot,
   Lock,
   Unlock,
-  Grid2x2
+  Grid2x2,
+  BarChart3,
+  HelpCircle
 } from 'lucide-react';
 import ReactionPicker from './ReactionPicker';
 
@@ -39,6 +41,8 @@ export default function MeetingControls({
   onToggleParticipants,
   onToggleCaptions,
   onToggleBreakouts,
+  onTogglePolls,
+  onToggleQa,
   onLeave
 }) {
   return (
@@ -179,6 +183,36 @@ export default function MeetingControls({
             title="Breakout rooms"
           >
             <Grid2x2 size={20} />
+          </button>
+        )}
+
+        {/* Polls (media connected only - data channel needs a LiveKit room) */}
+        {mediaConnected && (
+          <button
+            onClick={onTogglePolls}
+            className={`p-3 rounded-lg transition-all duration-200 ${
+              activePanel === 'polls'
+                ? 'bg-primary hover:bg-primary-dark'
+                : 'bg-meeting-card hover:bg-white/10'
+            }`}
+            title="Polls"
+          >
+            <BarChart3 size={20} />
+          </button>
+        )}
+
+        {/* Q&A (media connected only) */}
+        {mediaConnected && (
+          <button
+            onClick={onToggleQa}
+            className={`p-3 rounded-lg transition-all duration-200 ${
+              activePanel === 'qa'
+                ? 'bg-primary hover:bg-primary-dark'
+                : 'bg-meeting-card hover:bg-white/10'
+            }`}
+            title="Q&A"
+          >
+            <HelpCircle size={20} />
           </button>
         )}
 

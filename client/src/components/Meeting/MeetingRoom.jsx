@@ -16,6 +16,8 @@ import ParticipantList from '../Participants/ParticipantList';
 import CaptionsOverlay from '../Captions/CaptionsOverlay';
 import CaptionsPanel from '../Captions/CaptionsPanel';
 import BreakoutPanel from '../Breakout/BreakoutPanel';
+import PollPanel from '../Engagement/PollPanel';
+import QnAPanel from '../Engagement/QnAPanel';
 import WaitingRoomScreen from './WaitingRoomScreen';
 import { breakoutRoomLabel } from '../../utils/breakout';
 import Modal from '../ui/Modal';
@@ -673,6 +675,18 @@ export default function MeetingRoom() {
                 liveKitRoom={liveKitRoom}
               />
             )}
+            {activePanel === 'polls' && liveKitRoom && (
+              <PollPanel
+                onClose={() => togglePanel('polls')}
+                roomId={roomId}
+              />
+            )}
+            {activePanel === 'qa' && liveKitRoom && (
+              <QnAPanel
+                onClose={() => togglePanel('qa')}
+                roomId={roomId}
+              />
+            )}
           </div>
         )}
       </div>
@@ -697,6 +711,8 @@ export default function MeetingRoom() {
         onToggleParticipants={() => togglePanel('participants')}
         onToggleCaptions={() => togglePanel('captions')}
         onToggleBreakouts={() => togglePanel('breakouts')}
+        onTogglePolls={() => togglePanel('polls')}
+        onToggleQa={() => togglePanel('qa')}
         onLeave={handleLeave}
       />
 
