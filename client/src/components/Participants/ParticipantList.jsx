@@ -1,8 +1,9 @@
 import React from 'react';
 import { useParticipants, useLocalParticipant } from '@livekit/components-react';
-import { X, MicOff, VideoOff, LogOut, Crown, Download, FileText } from 'lucide-react';
+import { X, MicOff, VideoOff, LogOut, Crown, Download, FileText, Check, DoorOpen } from 'lucide-react';
 import { getInitials, formatDateTime } from '../../utils/constants';
 import useStore from '../../store/useStore';
+import { admitWaitingUser, denyWaitingUser, toggleWaitingRoom } from '../../hooks/useSocket';
 
 // Sourced from LiveKit hooks; host badge via metadata or attendance cross-ref (socket.id === identity).
 // Attendance (socket-fed) stays for the "Left the meeting" section until task 19 removes it.
@@ -18,6 +19,8 @@ export default function ParticipantList({
   const liveParticipants = useParticipants();
   const { localParticipant } = useLocalParticipant();
   const localIdentity = localParticipant?.identity;
+  const waitingList = useStore((s) => s.waitingList);
+  const waitingRoomEnabled = useStore((s) => s.roomSettings?.waitingRoomEnabled);
 
   const leftEntries = attendance
     .filter((a) => a.leftAt)
@@ -50,6 +53,52 @@ export default function ParticipantList({
           <X size={18} />
         </button>
       </div>
+
+      {/* Waiting room section (host only): admit or deny held joiners */}
+      {isHost && waitingRoomEnabled && (
+        <div className="px-4 py-3 border-b border-meeting-border">
+          <p className="text-[10px] uppercase tracking-wide text-gray-500 mb-2 flex items-center justify-between">
+            <span>Waiting room {waitingList.length > 0 && `(${waitingList.length})`}</span>
+          </p>
+          {waitingList.length === 0 ? (
+            <p className="text-xs text-gray-500">No one is waiting to join.</p>
+          ) : (
+            <div className="space-y-1">
+              {waitingList.map((w) => (
+                <div key={w.socketId} className="flex items-center px-2 py-1.5 rounded bg-meeting-card">
+                  <div className="relative mr-2.5 shrink-0">
+                    <div className="w-8 h-8 rounded-full bg-gradient-to-br from-yellow-500/40 to-meeting-card flex items-center justify-center">
+                      <span className="text-xs font-semibold">{getInitials(w.displayName)}</span>
+                    </div>
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium truncate">{w.displayName}</p>
+                    <p className="text-[10px] text-gray-500">
+                      Waiting since {formatDateTime(w.joinedAt)}
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-1">
+                    <button
+                      onClick={() => admitWaitingUser(w.socketId)}
+                      className="p-1.5 rounded hover:bg-green-600/30 text-green-400 transition-colors"
+                      title="Admit to meeting"
+                    >
+                      <Check size={14} />
+                    </button>
+                    <button
+                      onClick={() => denyWaitingUser(w.socketId)}
+                      className="p-1.5 rounded hover:bg-red-600/30 text-red-400 transition-colors"
+                      title="Deny and return to lobby"
+                    >
+                      <X size={14} />
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Participant list */}
       <div className="flex-1 overflow-y-auto">
@@ -149,10 +198,22 @@ export default function ParticipantList({
 
       {/* Host info footer */}
       {isHost && (
-        <div className="px-4 py-3 border-t border-meeting-border">
+        <div className="px-4 py-3 border-t border-meeting-border space-y-2">
           <p className="text-xs text-gray-500">
             You are the host. Hover over a participant to mute or remove them.
           </p>
+          <button
+            onClick={toggleWaitingRoom}
+            className={`w-full flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-xs transition-colors ${
+              waitingRoomEnabled
+                ? 'bg-yellow-700/20 text-yellow-400 hover:bg-yellow-700/30'
+                : 'bg-meeting-card text-gray-300 hover:bg-white/10'
+            }`}
+            title="Let new joiners wait until you admit them"
+          >
+            <DoorOpen size={14} />
+            Waiting room {waitingRoomEnabled ? 'on' : 'off'}
+          </button>
         </div>
       )}
 

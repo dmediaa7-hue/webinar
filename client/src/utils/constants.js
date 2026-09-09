@@ -51,6 +51,8 @@ export const EVENTS = {
   MUTE_PARTICIPANT: 'mute-participant',
   KICK_PARTICIPANT: 'kick-participant',
   TOGGLE_WAITING_ROOM: 'toggle-waiting-room',
+  ADMIT_WAITING: 'admit-waiting',
+  DENY_WAITING: 'deny-waiting',
   LOCK_ROOM: 'lock-room',
 
   // Events received
@@ -63,6 +65,9 @@ export const EVENTS = {
   RECORDING_STOPPED: 'recording-stopped',
   RECORDING_START: 'start-recording',
   RECORDING_STOP: 'stop-recording',
+  WAITING_ROOM: 'waiting-room',
+  WAITING_DENIED: 'waiting-denied',
+  WAITING_LIST_UPDATED: 'waiting-list-updated',
 
   // Breakout rooms (received when the host changes the layout)
   BREAKOUT_UPDATED: 'breakout-updated'

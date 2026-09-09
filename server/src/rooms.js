@@ -68,6 +68,7 @@ function createRoom(roomId, hostName = 'Host', hostSocketId = null, password = n
     hostName: hostName,
     createdAt: Date.now(),
     participants: new Map(), // socketId -> participant
+    waitingList: new Map(), // socketId -> { socketId, userId, displayName, joinedAt }
     attendance: [], // { socketId, userId, displayName, isHost, joinedAt, leftAt }
     settings: {
       isLocked: false,
@@ -260,6 +261,41 @@ function updateParticipant(roomId, socketId, updates) {
 }
 
 /**
+ * Hold a joiner in the waiting room (denied publish access until admitted).
+ * @returns {{ok:true}|{ok:false,error:string}}
+ */
+function addWaiting(roomId, participant) {
+  const room = rooms.get(roomId);
+  if (!room) return { ok: false, error: 'ROOM_NOT_FOUND' };
+  room.waitingList.set(participant.socketId, {
+    socketId: participant.socketId,
+    userId: participant.userId,
+    displayName: participant.displayName || 'Guest',
+    joinedAt: Date.now()
+  });
+  return { ok: true };
+}
+
+/** @returns {Array} waiting entries, oldest first */
+function getWaitingList(roomId) {
+  const room = rooms.get(roomId);
+  if (!room) return [];
+  return Array.from(room.waitingList.values());
+}
+
+function isWaiting(roomId, socketId) {
+  const room = rooms.get(roomId);
+  return Boolean(room && room.waitingList.has(socketId));
+}
+
+/** @returns {boolean} true if an entry was removed */
+function removeWaiting(roomId, socketId) {
+  const room = rooms.get(roomId);
+  if (!room) return false;
+  return room.waitingList.delete(socketId);
+}
+
+/**
  * Get participant info
  */
 function getParticipant(roomId, socketId) {
@@ -291,5 +327,9 @@ module.exports = {
   updateRoomSettings,
   persistRoomMetadata,
   removePersistedRoom,
-  getPersistedRoom
+  getPersistedRoom,
+  addWaiting,
+  getWaitingList,
+  isWaiting,
+  removeWaiting
 };

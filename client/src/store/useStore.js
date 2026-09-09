@@ -15,6 +15,11 @@ const useStore = create((set, get) => ({
   roomPassword: null,
   leftRoom: false,
 
+  // Waiting room state (task 14): set while the host has not admitted us yet.
+  waitingForRoom: false,
+  waitingRoomId: null,
+  waitingList: [], // [{ socketId, userId, displayName, joinedAt }]
+
   // Auth state
   isLoggedIn: !!localStorage.getItem('webinar-auth'),
   username: localStorage.getItem('webinar-username') || '',
@@ -78,6 +83,9 @@ const useStore = create((set, get) => ({
   setIsRecording: (isRecording) => set({ isRecording }),
   setBackgroundChoice: (backgroundChoice) => set({ backgroundChoice }),
   setBreakoutState: (breakoutState) => set({ breakoutState }),
+  setWaitingForRoom: (waitingForRoom) => set({ waitingForRoom }),
+  setWaitingRoomId: (waitingRoomId) => set({ waitingRoomId }),
+  setWaitingList: (waitingList) => set({ waitingList }),
 
   addReaction: (reaction) => {
     const { reactions, recentReactions } = get();
@@ -221,6 +229,9 @@ const useStore = create((set, get) => ({
     roomSettings: { isLocked: false, waitingRoomEnabled: false },
     roomPassword: null,
     leftRoom: false,
+    waitingForRoom: false,
+    waitingRoomId: null,
+    waitingList: [],
     displayName: '',
     localStream: null,
     isMuted: false,

@@ -22,6 +22,7 @@ export default function HomeScreen() {
   const [error, setError] = useState('');
   const [copied, setCopied] = useState(false);
   const wasKicked = searchParams.get('kicked') === 'true';
+  const wasDenied = searchParams.get('denied') === 'true';
 
   const store = useStore;
 
@@ -157,6 +158,12 @@ export default function HomeScreen() {
       {wasKicked && (
         <div className="mx-auto mt-4 px-4 py-3 bg-yellow-900/40 border border-yellow-700 rounded-lg text-yellow-200 max-w-md">
           You were removed from the meeting by the host.
+        </div>
+      )}
+
+      {wasDenied && (
+        <div className="mx-auto mt-4 px-4 py-3 bg-yellow-900/40 border border-yellow-700 rounded-lg text-yellow-200 max-w-md">
+          The host did not admit you to that meeting. You can join a different one below.
         </div>
       )}
 

@@ -16,6 +16,7 @@ import ParticipantList from '../Participants/ParticipantList';
 import CaptionsOverlay from '../Captions/CaptionsOverlay';
 import CaptionsPanel from '../Captions/CaptionsPanel';
 import BreakoutPanel from '../Breakout/BreakoutPanel';
+import WaitingRoomScreen from './WaitingRoomScreen';
 import { breakoutRoomLabel } from '../../utils/breakout';
 import Modal from '../ui/Modal';
 import Button from '../ui/Button';
@@ -69,6 +70,8 @@ export default function MeetingRoom() {
   const isAdmin = store((state) => state.isLoggedIn && state.username === 'Admin');
   const isRoomLocked = store((state) => state.roomSettings?.isLocked);
   const mySocketId = store((state) => state.mySocketId);
+  const waitingForRoom = store((state) => state.waitingForRoom);
+  const waitingRoomId = store((state) => state.waitingRoomId);
 
   const getInviteLink = () => `${window.location.origin}/join?room=${roomId}`;
 
@@ -127,6 +130,13 @@ export default function MeetingRoom() {
       store.getState().setDisplayName(name);
 
       const result = await joinRoom(roomId, name, password);
+      if (result?.waiting) {
+        // Host holds us until admission: no media token, no LiveKit connect.
+        store.getState().setWaitingForRoom(true);
+        store.getState().setWaitingRoomId(roomId);
+        setIsJoining(false);
+        return;
+      }
       if (!result?.success) {
         setJoinError(result?.error || 'Failed to join room');
         setIsJoining(false);
@@ -212,6 +222,7 @@ export default function MeetingRoom() {
     const state = store.getState();
     if (liveKitConnectAttemptedRef.current) return;
     if (state.roomId !== roomId) return;
+    if (state.waitingForRoom) return;
     if (isConfigured === false) {
       setTechNotice('LiveKit is not configured. Add LIVEKIT_URL, LIVEKIT_API_KEY and LIVEKIT_API_SECRET to server/.env to enable audio and video.');
       return;
@@ -536,6 +547,17 @@ export default function MeetingRoom() {
           Back to Home
         </button>
       </div>
+    );
+  }
+
+  // Waiting room - held before the host admits us (no media until then)
+  if (waitingForRoom) {
+    return (
+      <WaitingRoomScreen
+        roomId={waitingRoomId || roomId}
+        displayName={displayName}
+        onLeave={handleLeave}
+      />
     );
   }
 

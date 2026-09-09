@@ -6,7 +6,7 @@ const { Server } = require('socket.io');
 const { v4: uuidv4 } = require('uuid');
 require('dotenv').config();
 
-const { createRoom, joinRoom, leaveRoom, getRoom, getRooms, updateParticipant, updateRoomSettings, roomHasPassword, verifyPassword, getAttendance } = require('./rooms');
+const { createRoom, joinRoom, leaveRoom, getRoom, getRooms, updateParticipant, updateRoomSettings, roomHasPassword, verifyPassword, getAttendance, addWaiting, getWaitingList, removeWaiting } = require('./rooms');
 const { handleSignaling } = require('./signaling');
 const { handleChat, getChatHistory } = require('./chat');
 const recording = require('./recording');
@@ -155,6 +155,13 @@ app.get('/api/livekit/token', auth.loadUser, async (req, res) => {
   // Server-side room lock: non-host joins are refused while locked.
   if (livekitAdmin.isRoomLocked(room) && !roomAdmin) {
     return res.status(403).json({ error: 'Room is locked', code: 'ROOM_LOCKED' });
+  }
+
+  // Waiting-room gate (task 14): a held joiner must not receive a media token
+  // until the host admits them - "not connected to the LiveKit room" enforced
+  // on the server, not just in the UI.
+  if (roomState && roomState.waitingList && roomState.waitingList.has(identity)) {
+    return res.status(403).json({ error: 'Please wait for the host to admit you', code: 'WAITING_ROOM' });
   }
 
   // A token grant is normally scoped to the requested room. For the breakout
@@ -410,6 +417,27 @@ io.on('connection', (socket) => {
     }
     clearAttempts(ip);
 
+    // Waiting room gate: when enabled, non-host joiners are held without room
+    // membership (no participant entry, not in the socket room) until the host
+    // admits them. The first arrival bypasses the gate so the meeting can be
+    // started even when the host enables the waiting room from an empty room.
+    const isJoiningAsHost = socket.id === room.hostId || room.participants.size === 0;
+    if (room.settings.waitingRoomEnabled && !isJoiningAsHost) {
+      addWaiting(roomId, {
+        socketId: socket.id,
+        userId: uuidv4(),
+        displayName: cleanName
+      });
+      socket.data.roomId = roomId;
+      socket.data.displayName = cleanName;
+      socket.data.waiting = true;
+      socket.emit('waiting-room', { roomId, displayName: cleanName });
+      io.to(roomId).emit('waiting-list-updated', { waitingList: getWaitingList(roomId) });
+      if (typeof callback === 'function') callback({ success: true, waiting: true });
+      console.log(`[⏳] ${displayName} waiting in room ${roomId}`);
+      return;
+    }
+
     let participant;
     try {
       const isHost = (room.hostId === socket.id);
@@ -504,6 +532,18 @@ io.on('connection', (socket) => {
     const { roomId, displayName } = socket.data;
     if (!roomId) return;
 
+    // A held waiting joiner never became a participant - just release the
+    // waiting seat and refresh the host's list.
+    if (socket.data.waiting) {
+      if (removeWaiting(roomId, socket.id)) {
+        const room = getRoom(roomId);
+        if (room) io.to(roomId).emit('waiting-list-updated', { waitingList: getWaitingList(roomId) });
+      }
+      socket.data.roomId = null;
+      socket.data.waiting = false;
+      return;
+    }
+
     const room = getRoom(roomId);
     if (room) {
       const wasHost = room.participants.get(socket.id)?.isHost || false;
@@ -580,6 +620,93 @@ io.on('connection', (socket) => {
     if (!room || !socket.data.isHost) return;
     const settings = updateRoomSettings(room.id, { waitingRoomEnabled: !room.settings.waitingRoomEnabled });
     io.to(room.id).emit('room-settings-updated', settings);
+  });
+
+  // Admit a waiting joiner (host only): promotes them to a participant, puts
+  // their socket in the room, and hands them the standard room-joined payload
+  // so the client's normal admission path runs (store sync + LiveKit connect).
+  socket.on('admit-waiting', ({ targetId } = {}, ack) => {
+    const room = getRoom(socket.data.roomId);
+    if (!room || !socket.data.isHost) {
+      ack?.({ success: false, error: 'FORBIDDEN' });
+      return;
+    }
+    const waiting = getWaitingList(room.id).find((w) => w.socketId === targetId);
+    if (!waiting) {
+      ack?.({ success: false, error: 'NOT_WAITING' });
+      return;
+    }
+    removeWaiting(room.id, targetId);
+
+    const target = io.sockets.sockets.get(targetId);
+    if (target) {
+      const participant = joinRoom(room.id, {
+        socketId: targetId,
+        userId: waiting.userId,
+        displayName: waiting.displayName,
+        isHost: false,
+        isMuted: false,
+        isVideoOff: false,
+        isScreenSharing: false
+      });
+      target.data.roomId = room.id;
+      target.data.displayName = waiting.displayName;
+      target.data.isHost = false;
+      target.data.waiting = false;
+      target.join(room.id);
+
+      const existingParticipants = Array.from(room.participants.values())
+        .filter((p) => p.socketId !== targetId)
+        .map((p) => ({
+          socketId: p.socketId,
+          userId: p.userId,
+          displayName: p.displayName,
+          isHost: p.isHost,
+          isMuted: p.isMuted,
+          isVideoOff: p.isVideoOff,
+          isScreenSharing: p.isScreenSharing
+        }));
+
+      target.emit('room-joined', {
+        roomId: room.id,
+        roomName: room.name,
+        participants: existingParticipants,
+        isHost: false,
+        hasPassword: roomHasPassword(room),
+        settings: room.settings
+      });
+      target.to(room.id).emit('participant-joined', {
+        participant: {
+          socketId: targetId,
+          userId: participant.userId,
+          displayName: participant.displayName,
+          isHost: false,
+          isMuted: false,
+          isVideoOff: false,
+          isScreenSharing: false
+        }
+      });
+      io.to(room.id).emit('attendance-updated', { attendance: getAttendance(room.id) });
+    }
+
+    io.to(room.id).emit('waiting-list-updated', { waitingList: getWaitingList(room.id) });
+    ack?.({ success: true, socketId: targetId, displayName: waiting.displayName });
+    console.log(`[✅] ${waiting.displayName} admitted to room ${room.id}`);
+  });
+
+  // Deny a waiting joiner (host only): back to the lobby with a message.
+  socket.on('deny-waiting', ({ targetId } = {}) => {
+    const room = getRoom(socket.data.roomId);
+    if (!room || !socket.data.isHost) return;
+    if (removeWaiting(room.id, targetId)) {
+      const target = io.sockets.sockets.get(targetId);
+      if (target) {
+        target.data.roomId = null;
+        target.data.waiting = false;
+        target.emit('waiting-denied', { message: 'The host did not admit you to this meeting.' });
+      }
+      io.to(room.id).emit('waiting-list-updated', { waitingList: getWaitingList(room.id) });
+    }
   });
 
   // Lock room (host only)

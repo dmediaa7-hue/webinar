@@ -47,6 +47,9 @@ export function useSocket() {
         if (roomName) store.getState().setRoomName(roomName);
         store.getState().setIsHost(isHost);
         store.getState().setRoomSettings(settings || {});
+        // An admit promoted us from the waiting room: clear the waiting flags.
+        store.getState().setWaitingForRoom(false);
+        store.getState().setWaitingRoomId(null);
         // room membership resets the intentional-leave flag so later auto-rejoins work
         store.getState().setLeftRoom(false);
 
@@ -156,6 +159,20 @@ export function useSocket() {
         store.getState().setBreakoutState(breakoutState);
       });
 
+      // Waiting room (task 14)
+      socket.on(EVENTS.WAITING_ROOM, ({ roomId: waitingRoomId }) => {
+        store.getState().setWaitingForRoom(true);
+        store.getState().setWaitingRoomId(waitingRoomId);
+      });
+
+      socket.on(EVENTS.WAITING_DENIED, () => {
+        handleDenied();
+      });
+
+      socket.on(EVENTS.WAITING_LIST_UPDATED, ({ waitingList }) => {
+        store.getState().setWaitingList(waitingList || []);
+      });
+
       socket.on('disconnect', () => {
         console.log('[Socket] Disconnected from server');
       });
@@ -183,6 +200,9 @@ export function useSocket() {
       socket.off(EVENTS.RECORDING_STOPPED);
       socket.off('attendance-updated');
       socket.off(EVENTS.BREAKOUT_UPDATED);
+      socket.off(EVENTS.WAITING_ROOM);
+      socket.off(EVENTS.WAITING_DENIED);
+      socket.off(EVENTS.WAITING_LIST_UPDATED);
     };
   }, []);
 
@@ -194,6 +214,13 @@ const handleKicked = () => {
   useStore.getState().resetAll();
   useStore.getState().setIsConnecting(false);
   window.location.href = '/?kicked=true';
+};
+
+// Handle being denied from the waiting room - back to the lobby with a banner
+const handleDenied = () => {
+  useStore.getState().resetAll();
+  useStore.getState().setIsConnecting(false);
+  window.location.href = '/?denied=true';
 };
 
 // Helper methods for actions
@@ -270,6 +297,18 @@ export function kickParticipant(targetId) {
 
 export function lockRoom(isLocked) {
   socket.emit(EVENTS.LOCK_ROOM, { isLocked });
+}
+
+export function toggleWaitingRoom() {
+  socket.emit(EVENTS.TOGGLE_WAITING_ROOM);
+}
+
+export function admitWaitingUser(targetId) {
+  socket.emit(EVENTS.ADMIT_WAITING, { targetId });
+}
+
+export function denyWaitingUser(targetId) {
+  socket.emit(EVENTS.DENY_WAITING, { targetId });
 }
 
 export function startRecording() {
