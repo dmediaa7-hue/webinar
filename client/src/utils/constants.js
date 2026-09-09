@@ -100,3 +100,23 @@ export function formatTime(timestamp) {
   const date = new Date(timestamp);
   return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
+
+// Date-only stamp, e.g. "09/09/2026" (for attendance sheets)
+export function formatDateOnly(timestamp) {
+  if (!timestamp) return '';
+  const date = new Date(timestamp);
+  return date.toLocaleDateString([], { year: 'numeric', month: '2-digit', day: '2-digit' });
+}
+
+// Date + time stamp, e.g. "09/09/2026, 02:05 PM" (for attendance records)
+export function formatDateTime(timestamp) {
+  if (!timestamp) return '';
+  const date = new Date(timestamp);
+  return date.toLocaleString([], {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit'
+  });
+}

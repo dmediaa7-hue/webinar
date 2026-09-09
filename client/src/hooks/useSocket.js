@@ -2,7 +2,6 @@ import { useEffect, useRef } from 'react';
 import { io } from 'socket.io-client';
 import { SERVER_URL, EVENTS } from '../utils/constants';
 import useStore from '../store/useStore';
-import { useWebRTC } from './useWebRTC';
 
 const socket = io(SERVER_URL, {
   autoConnect: false,
@@ -11,7 +10,6 @@ const socket = io(SERVER_URL, {
 
 export function useSocket() {
   const store = useStore;
-  const webRTC = useWebRTC(socket);
 
   useEffect(() => {
     // Auto-connect when component mounts
@@ -23,6 +21,21 @@ export function useSocket() {
     const setupListeners = () => {
       socket.on('connect', () => {
         store.getState().setMySocketId(socket.id);
+        // On an unexpected drop the server already broadcast participant-left for our old socket,
+        // so rejoin to un-freeze the meeting for everyone else (skipped when left intentionally).
+        const state = store.getState();
+        if (state.roomId && !state.leftRoom) {
+          socket.emit(EVENTS.JOIN_ROOM, {
+            roomId: state.roomId,
+            displayName: state.displayName || localStorage.getItem('webinar-name') || 'Guest',
+            password: state.roomPassword,
+            isAdmin: state.isLoggedIn && state.username === 'Admin'
+          }, (response) => {
+            if (!response?.success) {
+              console.warn('[Socket] Auto-rejoin failed:', response?.error);
+            }
+          });
+        }
       });
       if (socket.connected) {
         store.getState().setMySocketId(socket.id);
@@ -34,11 +47,11 @@ export function useSocket() {
         if (roomName) store.getState().setRoomName(roomName);
         store.getState().setIsHost(isHost);
         store.getState().setRoomSettings(settings || {});
+        // room membership resets the intentional-leave flag so later auto-rejoins work
+        store.getState().setLeftRoom(false);
 
-        // Add existing participants (they'll be "pending" - we'll negotiate with them)
         participants.forEach(p => {
           store.getState().addParticipant({ ...p, stream: null });
-          webRTC.createPeer(p.socketId, true); // initiator
         });
 
         store.getState().setIsConnecting(false);
@@ -48,8 +61,6 @@ export function useSocket() {
       socket.on(EVENTS.PARTICIPANT_JOINED, ({ participant }) => {
         console.log('[Socket] Participant joined:', participant.displayName);
         store.getState().addParticipant({ ...participant, stream: null });
-        // Non-initiator - wait for offer
-        webRTC.createPeer(participant.socketId, false);
       });
 
       socket.on(EVENTS.PARTICIPANT_LEFT, ({ socketId, newHost }) => {
@@ -63,19 +74,6 @@ export function useSocket() {
           store.getState().updateParticipant(newHost, { isHost: true });
           store.getState().setIsHost(newHost === socket.id);
         }
-      });
-
-      // Signaling events
-      socket.on(EVENTS.OFFER, ({ from, fromName, sdp, type }) => {
-        webRTC.handleOffer(from, fromName, sdp);
-      });
-
-      socket.on(EVENTS.ANSWER, ({ from, sdp }) => {
-        webRTC.handleAnswer(from, sdp);
-      });
-
-      socket.on(EVENTS.ICE_CANDIDATE, ({ from, candidate }) => {
-        webRTC.handleIceCandidate(from, candidate);
       });
 
       // Media toggle events
@@ -171,9 +169,6 @@ export function useSocket() {
       socket.off(EVENTS.ROOM_JOINED);
       socket.off(EVENTS.PARTICIPANT_JOINED);
       socket.off(EVENTS.PARTICIPANT_LEFT);
-      socket.off(EVENTS.OFFER);
-      socket.off(EVENTS.ANSWER);
-      socket.off(EVENTS.ICE_CANDIDATE);
       socket.off(EVENTS.PARTICIPANT_AUDIO_TOGGLED);
       socket.off(EVENTS.PARTICIPANT_VIDEO_TOGGLED);
       socket.off(EVENTS.SCREEN_SHARE_STARTED);

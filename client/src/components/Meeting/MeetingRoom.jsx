@@ -1,17 +1,18 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
+import { Room, RoomEvent, Track } from 'livekit-client';
 import useStore from '../../store/useStore';
 import { useSocket, joinRoom, leaveRoom, roomRequiresPassword, sendChatMessage, sendTyping, toggleAudio, toggleVideo, screenShareStarted, screenShareStopped, muteParticipant, kickParticipant, startRecording, stopRecording, getAttendance } from '../../hooks/useSocket';
-import { useMedia } from '../../hooks/useMedia';
-import { useWebRTC } from '../../hooks/useWebRTC';
-import { formatTime, EVENTS } from '../../utils/constants';
+import { useLiveKitRoom } from '../../hooks/useLiveKitRoom';
+import { useLiveKitSync } from '../../hooks/useLiveKitSync';
+import { downloadAttendanceCSV, downloadAttendancePDF } from '../../utils/attendanceExport';
 import VideoGrid from './VideoGrid';
 import MeetingControls from './MeetingControls';
 import ChatPanel from '../Chat/ChatPanel';
 import ParticipantList from '../Participants/ParticipantList';
 import Modal from '../ui/Modal';
 import Button from '../ui/Button';
-import { Video, Users, Link, Copy, Check, Shield, Maximize2, Minimize2 } from 'lucide-react';
+import { Video, Users, Link, Copy, Check, Shield, Maximize2, Minimize2, AlertTriangle } from 'lucide-react';
 
 export default function MeetingRoom() {
   const { roomId } = useParams();
@@ -32,17 +33,20 @@ export default function MeetingRoom() {
   const [isCheckingRoom, setIsCheckingRoom] = useState(true);
   const [copied, setCopied] = useState(false);
   const [needsPassword, setNeedsPassword] = useState(false);
-  const screenStreamRef = useRef(null);
-  // Snapshot of the camera stream so screen sharing can be reverted to it
-  const cameraStreamRef = useRef(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [isMuted, setIsMuted] = useState(false);
+  const [isVideoOff, setIsVideoOff] = useState(false);
+  const [techNotice, setTechNotice] = useState('');
 
-  // Media hook
-  const { stream: localStream, startMedia, stopStream, toggleMute, toggleVideo: toggleCam, flipCamera, isMuted, isVideoOff } = useMedia();
+  // LiveKit media layer (token fetch + connect/disconnect)
+  const { room: liveKitRoom, isConfigured, connect: connectLiveKit, disconnect: disconnectLiveKit } = useLiveKitRoom();
+  useLiveKitSync(liveKitRoom);
 
-  // WebRTC
-  const webRTC = useWebRTC(socket);
-  const { replaceLocalStream } = webRTC;
+  // Local camera/mic streams built from LiveKit local participant tracks
+  const [localStream, setLocalStream] = useState(null);
+  const localVideoRef = useRef(null);
+  // MediaStream holding the local screen-share track (before publishing picks it up)
+  const screenStreamRef = useRef(null);
 
   // Selectors
   const displayName = store((state) => state.displayName) || localStorage.getItem('webinar-name') || 'Guest';
@@ -108,16 +112,8 @@ export default function MeetingRoom() {
     setJoinError('');
     setPasswordError('');
     try {
-      const stream = await startMedia();
-      if (!stream) {
-        setJoinError('Unable to access camera/microphone');
-        setIsJoining(false);
-        return;
-      }
       const name = store.getState().displayName || localStorage.getItem('webinar-name') || 'Guest';
-      store.getState().setLocalStream(stream);
       store.getState().setDisplayName(name);
-      cameraStreamRef.current = stream;
 
       const result = await joinRoom(roomId, name, password);
       if (!result?.success) {
@@ -125,6 +121,7 @@ export default function MeetingRoom() {
         setIsJoining(false);
         return;
       }
+      if (password) store.getState().setRoomPassword(password);
       setIsJoining(false);
       if (
         window.matchMedia('(pointer: coarse)').matches &&
@@ -146,7 +143,6 @@ export default function MeetingRoom() {
     }
   };
 
-  // Run the room check + join after the participant's name is known
   const startJoinFlow = useCallback(async () => {
     setIsCheckingRoom(true);
     try {
@@ -181,7 +177,6 @@ export default function MeetingRoom() {
     startJoinFlow();
   };
 
-  // Guests joining via shared link have no saved name -> prompt for it first
   useEffect(() => {
     if (!localStorage.getItem('webinar-name')) {
       setNeedsName(true);
@@ -193,11 +188,41 @@ export default function MeetingRoom() {
 
     return () => {
       leaveRoom();
+      disconnectLiveKit();
       store.getState().resetAll();
-      if (socket) webRTC.cleanupAllPeers();
       exitFullscreen().catch(() => {});
     };
-  }, [roomId]);
+  }, [roomId, disconnectLiveKit]);
+
+  // After the socket join succeeds the store has roomId + isHost; connect to
+  // the LiveKit room so media flows through the SFU.
+  const liveKitConnectAttemptedRef = useRef(false);
+  useEffect(() => {
+    const state = store.getState();
+    if (liveKitConnectAttemptedRef.current) return;
+    if (state.roomId !== roomId) return;
+    if (isConfigured === false) {
+      setTechNotice('LiveKit is not configured. Add LIVEKIT_URL, LIVEKIT_API_KEY and LIVEKIT_API_SECRET to server/.env to enable audio and video.');
+      return;
+    }
+    if (!socket?.id) return;
+    liveKitConnectAttemptedRef.current = true;
+    const name = state.displayName || localStorage.getItem('webinar-name') || 'Guest';
+    connectLiveKit({
+      roomName: roomId,
+      identity: socket.id,
+      name,
+      roomAdmin: state.isHost,
+      audio: true,
+      video: true
+    }).catch((err) => {
+      if (err?.code === 'LIVEKIT_NOT_CONFIGURED') {
+        setTechNotice('LiveKit is not configured. Add LIVEKIT_URL, LIVEKIT_API_KEY and LIVEKIT_API_SECRET to server/.env to enable audio and video.');
+      } else {
+        setTechNotice(err?.message || 'Unable to connect to the media server.');
+      }
+    });
+  }, [roomId, isConfigured, socket, connectLiveKit]);
 
   const handlePasswordSubmit = (e) => {
     e.preventDefault();
@@ -209,8 +234,77 @@ export default function MeetingRoom() {
     attemptJoin(passwordInput.trim());
   };
 
-  // Draw local video
-  const localVideoRef = useRef(null);
+  // Reflect local participant state (mute/camera/screen) from LiveKit events
+  // and rebuild the local MediaStream when tracks are (un)published.
+  useEffect(() => {
+    const room = liveKitRoom;
+    if (!room) return;
+    const local = room.localParticipant;
+
+    const refreshLocalStream = () => {
+      const camPub = local.getTrackPublication(Track.Source.Camera);
+      const micPub = local.getTrackPublication(Track.Source.Microphone);
+      const ms = new MediaStream();
+      if (camPub?.track?.mediaStreamTrack) ms.addTrack(camPub.track.mediaStreamTrack);
+      if (micPub?.track?.mediaStreamTrack) ms.addTrack(micPub.track.mediaStreamTrack);
+      setLocalStream(ms);
+      store.getState().setLocalStream(ms);
+    };
+
+    const onTrackMuted = (publication, participant) => {
+      if (participant.identity !== local.identity) return;
+      if (publication.source === Track.Source.Microphone) setIsMuted(true);
+      if (publication.source === Track.Source.Camera) setIsVideoOff(true);
+    };
+
+    const onTrackUnmuted = (publication, participant) => {
+      if (participant.identity !== local.identity) return;
+      if (publication.source === Track.Source.Microphone) setIsMuted(false);
+      if (publication.source === Track.Source.Camera) setIsVideoOff(false);
+    };
+
+    const onLocalTrackPublished = (publication) => {
+      if (publication.source === Track.Source.ScreenShare) {
+        if (publication.track?.mediaStreamTrack) {
+          screenStreamRef.current = new MediaStream([publication.track.mediaStreamTrack]);
+          setIsScreenSharing(true);
+        }
+        screenShareStarted();
+      } else {
+        refreshLocalStream();
+      }
+    };
+
+    const onLocalTrackUnpublished = (publication) => {
+      if (publication.source === Track.Source.ScreenShare) {
+        if (screenStreamRef.current) {
+          screenStreamRef.current.getTracks().forEach((t) => t.stop());
+          screenStreamRef.current = null;
+        }
+        setIsScreenSharing(false);
+        screenShareStopped();
+      } else {
+        refreshLocalStream();
+      }
+    };
+
+    setIsMuted(!local.isMicrophoneEnabled);
+    setIsVideoOff(!local.isCameraEnabled);
+    refreshLocalStream();
+
+    room.on(RoomEvent.TrackMuted, onTrackMuted);
+    room.on(RoomEvent.TrackUnmuted, onTrackUnmuted);
+    room.on(RoomEvent.LocalTrackPublished, onLocalTrackPublished);
+    room.on(RoomEvent.LocalTrackUnpublished, onLocalTrackUnpublished);
+
+    return () => {
+      room.off(RoomEvent.TrackMuted, onTrackMuted);
+      room.off(RoomEvent.TrackUnmuted, onTrackUnmuted);
+      room.off(RoomEvent.LocalTrackPublished, onLocalTrackPublished);
+      room.off(RoomEvent.LocalTrackUnpublished, onLocalTrackUnpublished);
+    };
+  }, [liveKitRoom]);
+
   useEffect(() => {
     if (localVideoRef.current && localStream) {
       localVideoRef.current.srcObject = localStream;
@@ -218,71 +312,61 @@ export default function MeetingRoom() {
   }, [localStream]);
 
   const handleToggleMute = useCallback(() => {
-    toggleMute();
-    toggleAudio(!isMuted);
-  }, [isMuted, toggleMute]);
+    const room = liveKitRoom;
+    if (!room) return;
+    const nextMuted = !room.localParticipant.isMicrophoneEnabled;
+    room.localParticipant.setMicrophoneEnabled(!nextMuted);
+    toggleAudio(nextMuted);
+  }, [liveKitRoom]);
 
   const handleToggleVideo = useCallback(() => {
-    toggleCam();
-    toggleVideo(!isVideoOff);
-  }, [isVideoOff, toggleCam]);
+    const room = liveKitRoom;
+    if (!room) return;
+    const nextOff = !room.localParticipant.isCameraEnabled;
+    room.localParticipant.setCameraEnabled(!nextOff);
+    toggleVideo(nextOff);
+  }, [liveKitRoom]);
 
   const handleFlipCamera = useCallback(async () => {
-    if (!localStream) return;
-    const result = await flipCamera();
-    if (!result) return;
-    const { oldTrack, newTrack } = result;
-    store.getState().peers.forEach((peer) => {
-      if (peer && !peer.destroyed && typeof peer.replaceTrack === 'function') {
-        try {
-          peer.replaceTrack(oldTrack, newTrack, localStream);
-        } catch (e) {
-          console.warn('[WebRTC] replaceTrack failed for peer', e);
-        }
-      }
-    });
-  }, [localStream, flipCamera]);
-
-  const stopScreenShare = useCallback(() => {
-    if (screenStreamRef.current) {
-      screenStreamRef.current.getTracks().forEach(track => track.stop());
-      screenStreamRef.current = null;
+    const room = liveKitRoom;
+    if (!room) return;
+    try {
+      const devices = await Room.getLocalDevices('videoinput');
+      if (devices.length < 2) return;
+      const current = room.localParticipant
+        .getTrackPublication(Track.Source.Camera)
+        ?.track?.mediaStreamTrack;
+      const currentId = current?.getSettings?.().deviceId;
+      const index = devices.findIndex((d) => d.deviceId === currentId);
+      const next = devices[(index + 1) % devices.length];
+      await room.switchActiveDevice('camera', next.deviceId);
+    } catch (e) {
+      console.warn('[LiveKit] Camera switch failed:', e);
     }
-    setIsScreenSharing(false);
-    store.getState().setIsScreenSharing(false);
-    store.getState().setScreenShareStream(null);
-    if (cameraStreamRef.current) {
-      replaceLocalStream(cameraStreamRef.current);
-    }
-    screenShareStopped();
-  }, [replaceLocalStream]);
+  }, [liveKitRoom]);
 
   const handleScreenShare = useCallback(async () => {
-    if (isScreenSharing) {
-      stopScreenShare();
-    } else {
-      try {
-        const screenStream = await navigator.mediaDevices.getDisplayMedia({ video: { cursor: 'always' }, audio: false });
-        screenStream.getVideoTracks()[0].onended = () => stopScreenShare();
-        screenStreamRef.current = screenStream;
-        setIsScreenSharing(true);
-        store.getState().setIsScreenSharing(true);
-        store.getState().setScreenShareStream(screenStream);
-        replaceLocalStream(screenStream);
-        screenShareStarted();
-      } catch (err) {
-        // User cancelled screen share
+    const room = liveKitRoom;
+    if (!room) return;
+    try {
+      if (isScreenSharing) {
+        await room.localParticipant.setScreenShareEnabled(false);
+      } else {
+        await room.localParticipant.setScreenShareEnabled(true);
       }
+    } catch (e) {
+      // User cancelled the share picker or capture is unavailable
     }
-  }, [isScreenSharing, stopScreenShare]);
+  }, [liveKitRoom, isScreenSharing]);
 
   const handleLeave = useCallback(() => {
+    store.getState().setLeftRoom(true);
     leaveRoom();
-    if (localStream) stopStream(localStream);
+    disconnectLiveKit();
     store.getState().resetAll();
     exitFullscreen().catch(() => {});
     navigate('/');
-  }, [localStream, stopStream, navigate]);
+  }, [disconnectLiveKit, navigate]);
 
   const handleToggleRecording = useCallback(() => {
     if (!isHost) return;
@@ -293,34 +377,20 @@ export default function MeetingRoom() {
     }
   }, [isHost, isRecording]);
 
-  const handleDownloadAttendance = useCallback(async () => {
+  const handleDownloadAttendance = useCallback(async (format) => {
     const res = await getAttendance();
     if (!res?.success) {
       console.warn('[Meeting] Attendance download not allowed:', res?.error);
       return;
     }
-    const rows = [
-      ['Name', 'Role', 'Joined', 'Left'],
-      ...res.attendance.map(a => [
-        a.displayName,
-        a.isHost ? 'Host' : 'Participant',
-        formatTime(a.joinedAt),
-        a.leftAt ? formatTime(a.leftAt) : 'Still present'
-      ])
-    ];
-    const csv = rows
-      .map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(','))
-      .join('\r\n');
-    const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `attendance-${roomId}.csv`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-  }, [roomId]);
+    const hostName = [...participants.values()].find((p) => p.isHost)?.displayName || displayName;
+    const payload = { attendance: res.attendance, roomName, roomId, hostName };
+    if (format === 'pdf') {
+      downloadAttendancePDF(payload);
+    } else {
+      downloadAttendanceCSV(payload);
+    }
+  }, [participants, displayName, roomName, roomId]);
 
   const togglePanel = (panel) => {
     store.getState().setActivePanel(activePanel === panel ? 'none' : panel);
@@ -522,12 +592,22 @@ export default function MeetingRoom() {
       {/* Main content area */}
       <div className="flex-1 flex overflow-hidden">
         <div className="flex-1 overflow-hidden relative">
-          <VideoGrid
-            participants={allParticipants}
-            localVideoRef={localVideoRef}
-            isScreenSharing={isScreenSharing}
-            screenStream={screenStreamRef.current}
-          />
+          {techNotice ? (
+            <div className="h-full flex items-center justify-center p-6">
+              <div className="max-w-md text-center bg-meeting-surface border border-meeting-border rounded-xl p-8">
+                <AlertTriangle size={32} className="text-yellow-500 mx-auto mb-4" />
+                <h2 className="text-lg font-semibold mb-2">Media unavailable</h2>
+                <p className="text-sm text-gray-400">{techNotice}</p>
+              </div>
+            </div>
+          ) : (
+            <VideoGrid
+              participants={allParticipants}
+              localVideoRef={localVideoRef}
+              isScreenSharing={isScreenSharing}
+              screenStream={screenStreamRef.current}
+            />
+          )}
         </div>
 
         {activePanel !== 'none' && (

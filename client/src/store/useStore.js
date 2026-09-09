@@ -7,6 +7,7 @@ const useStore = create((set, get) => ({
   isHost: false,
   roomSettings: { isLocked: false, waitingRoomEnabled: false },
   roomPassword: null,
+  leftRoom: false,
 
   // Auth state
   isLoggedIn: !!localStorage.getItem('webinar-auth'),
@@ -49,6 +50,7 @@ const useStore = create((set, get) => ({
   setIsHost: (isHost) => set({ isHost }),
   setRoomSettings: (roomSettings) => set({ roomSettings }),
   setRoomPassword: (roomPassword) => set({ roomPassword }),
+  setLeftRoom: (leftRoom) => set({ leftRoom }),
   setDisplayName: (displayName) => set({ displayName }),
   setMySocketId: (mySocketId) => set({ mySocketId }),
   setLocalStream: (localStream) => set({ localStream }),
@@ -177,6 +179,7 @@ const useStore = create((set, get) => ({
     isHost: false,
     roomSettings: { isLocked: false, waitingRoomEnabled: false },
     roomPassword: null,
+    leftRoom: false,
     displayName: '',
     localStream: null,
     isMuted: false,

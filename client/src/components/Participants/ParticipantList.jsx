@@ -1,6 +1,6 @@
 import React from 'react';
-import { X, MicOff, VideoOff, LogOut, Crown, Download } from 'lucide-react';
-import { getInitials, formatTime } from '../../utils/constants';
+import { X, MicOff, VideoOff, LogOut, Crown, Download, FileText } from 'lucide-react';
+import { getInitials, formatDateTime } from '../../utils/constants';
 import useStore from '../../store/useStore';
 
 export default function ParticipantList({
@@ -75,7 +75,7 @@ export default function ParticipantList({
                 {p.isMuted && <span className="flex items-center gap-0.5"><MicOff size={8} /> Muted</span>}
                 {p.isVideoOff && <span className="flex items-center gap-0.5"><VideoOff size={8} /> Video off</span>}
                 {!p.isMuted && !p.isVideoOff && <span className="text-green-500">Active</span>}
-                {joinedAtFor(p) && <span className="text-gray-500">Joined {formatTime(joinedAtFor(p))}</span>}
+                {joinedAtFor(p) && <span className="text-gray-500">Joined {formatDateTime(joinedAtFor(p))}</span>}
               </div>
             </div>
 
@@ -121,7 +121,7 @@ export default function ParticipantList({
                 <div className="flex-1 min-w-0">
                   <span className="text-sm font-medium truncate">{e.displayName}</span>
                   <div className="text-[10px] text-gray-500">
-                    {formatTime(e.joinedAt)} → {formatTime(e.leftAt)}
+                    {formatDateTime(e.joinedAt)} → {formatDateTime(e.leftAt)}
                   </div>
                 </div>
               </div>
@@ -141,14 +141,22 @@ export default function ParticipantList({
 
       {/* Attendance download (host or admin only) */}
       {(isHost || isAdmin) && (
-        <div className="px-4 py-3 border-t border-meeting-border">
+        <div className="px-4 py-3 border-t border-meeting-border flex gap-2">
           <button
-            onClick={onDownloadAttendance}
-            className="w-full flex items-center justify-center gap-2 px-3 py-2 bg-meeting-card hover:bg-white/10 rounded-lg text-xs text-gray-300 transition-colors"
+            onClick={() => onDownloadAttendance('csv')}
+            className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 bg-meeting-card hover:bg-white/10 rounded-lg text-xs text-gray-300 transition-colors"
             title="Download attendance sheet (CSV)"
           >
             <Download size={14} />
-            Download Attendance
+            CSV
+          </button>
+          <button
+            onClick={() => onDownloadAttendance('pdf')}
+            className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 bg-primary/20 hover:bg-primary/30 rounded-lg text-xs text-white transition-colors"
+            title="Export attendance report (PDF)"
+          >
+            <FileText size={14} />
+            PDF
           </button>
         </div>
       )}
