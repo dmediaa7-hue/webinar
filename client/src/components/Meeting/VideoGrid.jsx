@@ -2,21 +2,7 @@ import React, { useRef, useState, useEffect, useMemo } from 'react';
 import { useTracks } from '@livekit/components-react';
 import { Track } from 'livekit-client';
 import VideoCard from './VideoCard';
-
-// Compute the layout that maximizes equal tile size for `count` participants
-// inside a container of `width` x `height`. Tiles keep a ~16:9 target ratio;
-// more columns are preferred on ties (landscape-friendly).
-function computeLayout(count, width, height, tileAspect = 16 / 9) {
-  let best = null;
-  for (let cols = 1; cols <= count; cols++) {
-    const rows = Math.ceil(count / cols);
-    const tileW = Math.min(width / cols, (tileAspect * height) / rows);
-    if (!best || tileW > best.tileW || (tileW === best.tileW && cols > best.cols)) {
-      best = { cols, rows, tileW, tileH: tileW / tileAspect };
-    }
-  }
-  return best;
-}
+import { computeLayout, computeGridMode } from '../../utils/gridLayout';
 
 // VideoGrid is fully LiveKit-native: camera tiles (with placeholder for
 // audio-only participants) plus any active screen-share tiles. No props — all
@@ -42,22 +28,21 @@ export default function VideoGrid() {
     return () => observer.disconnect();
   }, []);
 
-  // Screen-share tiles first, then camera tiles (sorted in order of
-  // participant connect time by LiveKit).
-  const tiles = useMemo(() => {
-    const screens = screenRefs.map(ref => ({
-      ref,
-      isScreenShare: true,
-    }));
-    const cams = cameraRefs.map(ref => ({
-      ref,
-      isScreenShare: ref.source === Track.Source.ScreenShare,
-    }));
-    return [...screens, ...cams];
-  }, [screenRefs, cameraRefs]);
+  const mode = computeGridMode(screenRefs.length, cameraRefs.length);
 
-  const count = tiles.length;
+  const screenTiles = useMemo(
+    () => screenRefs.map(ref => ({ ref, isScreenShare: true })),
+    [screenRefs]
+  );
+  const cameraTiles = useMemo(
+    () => cameraRefs.map(ref => ({ ref, isScreenShare: ref.source === Track.Source.ScreenShare })),
+    [cameraRefs]
+  );
+  const allTiles = useMemo(() => [...screenTiles, ...cameraTiles], [screenTiles, cameraTiles]);
 
+  const count = allTiles.length;
+
+  // Uniform grid layout when nothing is pinned.
   const layout = useMemo(() => {
     if (count === 0) return { cols: 1, rows: 1 };
     if (size.width > 0 && size.height > 0) {
@@ -67,10 +52,54 @@ export default function VideoGrid() {
     return { cols, rows: Math.ceil(count / cols) || 1 };
   }, [count, size.width, size.height]);
 
+  // Screen-share tiles pack into the dominant grid; the camera strip uses the
+  // same equal-tile maths so each strip tile stays proportional.
+  const screenLayout = useMemo(() => {
+    const n = screenTiles.length;
+    if (n === 0) return { cols: 1, rows: 1 };
+    if (size.width > 0 && size.height > 0) {
+      return computeLayout(n, size.width, size.height);
+    }
+    const cols = Math.ceil(Math.sqrt(n)) || 1;
+    return { cols, rows: Math.ceil(n / cols) || 1 };
+  }, [screenTiles.length, size.width, size.height]);
+
+  const videoCard = (tile, index, isActive) => (
+    <VideoCard
+      key={`${tile.ref.participant.identity}-${tile.ref.source}`}
+      trackRef={tile.ref}
+      isActiveSpeaker={isActive}
+    />
+  );
+
   if (count === 0) {
     return (
       <div ref={containerRef} className="h-full w-full p-3 overflow-hidden flex items-center justify-center">
         <p className="text-gray-400 text-sm">Waiting for participants to join…</p>
+      </div>
+    );
+  }
+
+  if (mode === 'pinned') {
+    return (
+      <div ref={containerRef} className="h-full w-full p-3 overflow-hidden flex gap-3">
+        {/* Screen share dominates the layout */}
+        <div
+          className="flex-1 min-w-0 grid gap-3"
+          style={{
+            gridTemplateColumns: `repeat(${screenLayout.cols}, minmax(0, 1fr))`,
+            gridTemplateRows: `repeat(${screenLayout.rows}, minmax(0, 1fr))`,
+          }}
+        >
+          {screenTiles.map((tile, i) => videoCard(tile, i, i === 0))}
+        </div>
+
+        {/* Camera tiles drop to a side strip when a screen is shared */}
+        {cameraTiles.length > 0 && (
+          <div className="w-60 shrink-0 overflow-y-auto grid gap-3 auto-rows-fr">
+            {cameraTiles.map((tile, i) => videoCard(tile, i, false))}
+          </div>
+        )}
       </div>
     );
   }
@@ -84,13 +113,7 @@ export default function VideoGrid() {
           gridTemplateRows: `repeat(${layout.rows}, minmax(0, 1fr))`,
         }}
       >
-        {tiles.map(({ ref }, index) => (
-          <VideoCard
-            key={`${ref.participant.identity}-${ref.source}`}
-            trackRef={ref}
-            isActiveSpeaker={index === 0}
-          />
-        ))}
+        {allTiles.map((tile, index) => videoCard(tile, index, index === 0))}
       </div>
     </div>
   );

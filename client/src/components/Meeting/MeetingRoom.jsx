@@ -5,6 +5,7 @@ import { RoomContext, useParticipants } from '@livekit/components-react';
 import useStore from '../../store/useStore';
 import { useSocket, joinRoom, leaveRoom, roomRequiresPassword, sendTyping, toggleAudio, toggleVideo, screenShareStarted, screenShareStopped, muteParticipant, kickParticipant, lockRoom, startRecording, stopRecording, getAttendance } from '../../hooks/useSocket';
 import { useLiveKitRoom } from '../../hooks/useLiveKitRoom';
+import { toggleScreenShare } from '../../utils/liveKitShare';
 import { useLiveKitSync } from '../../hooks/useLiveKitSync';
 import { downloadAttendanceCSV, downloadAttendancePDF } from '../../utils/attendanceExport';
 import VideoGrid from './VideoGrid';
@@ -342,14 +343,9 @@ export default function MeetingRoom() {
   }, [liveKitRoom]);
 
   const handleScreenShare = useCallback(async () => {
-    const room = liveKitRoom;
-    if (!room) return;
+    if (!liveKitRoom) return;
     try {
-      if (isScreenSharing) {
-        await room.localParticipant.setScreenShareEnabled(false);
-      } else {
-        await room.localParticipant.setScreenShareEnabled(true);
-      }
+      await toggleScreenShare(liveKitRoom, isScreenSharing);
     } catch (e) {
       // User cancelled the share picker or capture is unavailable
     }
