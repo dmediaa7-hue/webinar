@@ -13,6 +13,8 @@ const recording = require('./recording');
 const breakout = require('./breakout');
 const engagement = require('./engagement');
 const whiteboard = require('./whiteboard');
+const meetings = require('./meetings');
+const invite = require('./invite');
 const auth = require('./auth');
 const livekit = require('./livekit');
 const livekitAdmin = require('./livekitAdmin');
@@ -183,6 +185,62 @@ app.get('/api/livekit/status', (req, res) => {
 // Health check
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', rooms: getRooms().size, timestamp: Date.now() });
+});
+
+// --- Meeting scheduling API (task 17) ---
+// hostUserId is always req.user.id on create, so no account can schedule
+// meetings on another user's behalf.
+
+function meetingWithInvite(meeting) {
+  return { ...meeting, invite: invite.inviteFor(meeting) };
+}
+
+app.get('/api/meetings', auth.requireAuth, (req, res) => {
+  const list = meetings.listMeetings({ hostUserId: req.user.id });
+  res.json({ meetings: list.map(meetingWithInvite) });
+});
+
+app.post('/api/meetings', auth.requireAuth, (req, res) => {
+  const input = {
+    hostUserId: req.user.id,
+    title: req.body?.title,
+    startTime: req.body?.startTime,
+    endTime: req.body?.endTime,
+    roomName: req.body?.roomName,
+    passcode: req.body?.passcode,
+    waitingRoomEnabled: req.body?.waitingRoomEnabled
+  };
+  try {
+    const meeting = meetings.createMeeting(input);
+    res.status(201).json({ meeting: meetingWithInvite(meeting) });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.get('/api/meetings/:id', auth.requireAuth, (req, res) => {
+  const meeting = meetings.getMeeting(req.params.id);
+  if (!meeting) return res.status(404).json({ error: 'Meeting not found' });
+  if (meeting.hostUserId !== req.user.id) return res.status(403).json({ error: 'Forbidden' });
+  res.json({ meeting: meetingWithInvite(meeting) });
+});
+
+// Deliberately public like a calendar invite: anyone holding the link can
+// fetch the ICS without an account.
+app.get('/api/meetings/:id/invite.ics', (req, res) => {
+  const meeting = meetings.getMeeting(req.params.id);
+  if (!meeting) return res.status(404).json({ error: 'Meeting not found' });
+  res.setHeader('Content-Type', 'text/calendar; charset=utf-8');
+  res.setHeader('Content-Disposition', `attachment; filename="webinar-${meeting.id}.ics"`);
+  res.send(invite.toICS(meeting));
+});
+
+app.delete('/api/meetings/:id', auth.requireAuth, (req, res) => {
+  const meeting = meetings.getMeeting(req.params.id);
+  if (!meeting) return res.status(404).json({ error: 'Meeting not found' });
+  if (meeting.hostUserId !== req.user.id) return res.status(403).json({ error: 'Forbidden' });
+  meetings.deleteMeeting(req.params.id);
+  res.json({ ok: true });
 });
 
 // Create room

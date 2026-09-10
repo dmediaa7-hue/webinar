@@ -109,6 +109,54 @@ async function run() {
     const status = await res.json();
     console.log('  (LiveKit configured:', Boolean(status.configured), ')');
 
+    // --- Meeting scheduling API (task 17) ---
+    // Unauthenticated create must be rejected before touching any DB logic.
+    res = await fetch(`${SERVER_URL}/api/meetings`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        title: 'No-session meeting',
+        startTime: Date.now() + 3600 * 1000,
+        endTime: Date.now() + 7200 * 1000
+      })
+    });
+    assert(res.status === 401, 'POST /api/meetings without session returns 401');
+
+    // Authenticated create (session cookie from the login above).
+    const startTime = Date.now() + 60 * 60 * 1000;
+    res = await client.request('/api/meetings', {
+      method: 'POST',
+      body: JSON.stringify({
+        title: 'Scheduled Sync',
+        startTime,
+        endTime: startTime + 60 * 60 * 1000,
+        roomName: 'scheduled-sync',
+        waitingRoomEnabled: false
+      })
+    });
+    assert(res.status === 201, 'POST /api/meetings with session returns 201');
+    const created = await res.json();
+    const invitePayload = created.meeting && created.meeting.invite;
+    assert(invitePayload && invitePayload.joinUrl.includes('/meeting/'), 'created meeting exposes a join URL');
+    assert(invitePayload.googleCalendarUrl.startsWith('https://calendar.google.com/calendar/render?'), 'google calendar URL present');
+    assert(invitePayload.icsPath === `/api/meetings/${created.meeting.id}/invite.ics`, 'ics download path present');
+    assert(created.meeting.hostUserId === me.user.id, 'hostUserId is the authenticated user, never a client-supplied id');
+
+    res = await client.request('/api/meetings');
+    assert(res.status === 200, 'GET /api/meetings returns 200');
+    const listing = await res.json();
+    assert(listing.meetings.some(m => m.id === created.meeting.id), 'listed meetings include the created one');
+
+    res = await client.request(`/api/meetings/${created.meeting.id}/invite.ics`);
+    assert(res.status === 200, 'ICS invite is downloadable');
+    const ics = await res.text();
+    assert(ics.includes('BEGIN:VCALENDAR') && ics.includes('BEGIN:VEVENT') && ics.includes(`UID:${created.meeting.id}@webinar`), 'ICS body parses with UID');
+
+    res = await client.request(`/api/meetings/${created.meeting.id}`, { method: 'DELETE', body: '{}' });
+    assert(res.status === 200, 'DELETE /api/meetings/:id returns 200');
+    res = await client.request(`/api/meetings/${created.meeting.id}`);
+    assert(res.status === 404, 'deleted meeting returns 404');
+
     console.log('\n=== Test Complete ===');
     console.log(`  Passed: ${passed}`);
     console.log(`  Failed: ${failed}`);
