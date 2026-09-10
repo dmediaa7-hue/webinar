@@ -18,6 +18,7 @@ import CaptionsPanel from '../Captions/CaptionsPanel';
 import BreakoutPanel from '../Breakout/BreakoutPanel';
 import PollPanel from '../Engagement/PollPanel';
 import QnAPanel from '../Engagement/QnAPanel';
+import WhiteboardPanel from '../Whiteboard/WhiteboardPanel';
 import WaitingRoomScreen from './WaitingRoomScreen';
 import { breakoutRoomLabel } from '../../utils/breakout';
 import Modal from '../ui/Modal';
@@ -639,9 +640,16 @@ export default function MeetingRoom() {
           {activePanel === 'captions' && liveKitRoom && (
             <CaptionsOverlay room={liveKitRoom} />
           )}
+
+          {activePanel === 'whiteboard' && liveKitRoom && (
+            <WhiteboardPanel
+              onClose={() => togglePanel('whiteboard')}
+              roomId={roomId}
+            />
+          )}
         </div>
 
-        {activePanel !== 'none' && (
+        {activePanel !== 'none' && activePanel !== 'whiteboard' && (
           <div className="w-80 animate-slide-in-right">
             {activePanel === 'chat' && (
               <ChatPanel
@@ -713,6 +721,7 @@ export default function MeetingRoom() {
         onToggleBreakouts={() => togglePanel('breakouts')}
         onTogglePolls={() => togglePanel('polls')}
         onToggleQa={() => togglePanel('qa')}
+        onToggleWhiteboard={() => togglePanel('whiteboard')}
         onLeave={handleLeave}
       />
 

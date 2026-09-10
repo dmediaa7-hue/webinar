@@ -17,7 +17,8 @@ import {
   Unlock,
   Grid2x2,
   BarChart3,
-  HelpCircle
+  HelpCircle,
+  PenTool
 } from 'lucide-react';
 import ReactionPicker from './ReactionPicker';
 
@@ -43,6 +44,7 @@ export default function MeetingControls({
   onToggleBreakouts,
   onTogglePolls,
   onToggleQa,
+  onToggleWhiteboard,
   onLeave
 }) {
   return (
@@ -213,6 +215,21 @@ export default function MeetingControls({
             title="Q&A"
           >
             <HelpCircle size={20} />
+          </button>
+        )}
+
+        {/* Whiteboard (media connected only - data channel needs a LiveKit room) */}
+        {mediaConnected && (
+          <button
+            onClick={onToggleWhiteboard}
+            className={`p-3 rounded-lg transition-all duration-200 ${
+              activePanel === 'whiteboard'
+                ? 'bg-primary hover:bg-primary-dark'
+                : 'bg-meeting-card hover:bg-white/10'
+            }`}
+            title="Whiteboard"
+          >
+            <PenTool size={20} />
           </button>
         )}
 

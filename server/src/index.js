@@ -12,6 +12,7 @@ const { handleChat, getChatHistory } = require('./chat');
 const recording = require('./recording');
 const breakout = require('./breakout');
 const engagement = require('./engagement');
+const whiteboard = require('./whiteboard');
 const auth = require('./auth');
 const livekit = require('./livekit');
 const livekitAdmin = require('./livekitAdmin');
@@ -453,6 +454,22 @@ app.get('/api/rooms/:roomId/qa', (req, res) => {
   const room = getRoom(req.params.roomId);
   if (!room) return res.status(404).json({ error: 'Room not found' });
   res.json({ questions: engagement.listQuestions(req.params.roomId) });
+});
+
+// Whiteboard scene save (participant-gated; debounced by the client).
+app.post('/api/rooms/:roomId/whiteboard', (req, res) => {
+  const room = requireRoomParticipant(req, res, req.params.roomId);
+  if (!room) return;
+  const result = whiteboard.saveScene(req.params.roomId, req.body?.elements);
+  if (!result.ok) return res.status(400).json({ error: result.error });
+  res.json({ ok: true });
+});
+
+// Whiteboard scene load (room-scoped; reload recovery).
+app.get('/api/rooms/:roomId/whiteboard', (req, res) => {
+  const room = getRoom(req.params.roomId);
+  if (!room) return res.status(404).json({ error: 'Room not found' });
+  res.json({ elements: whiteboard.getScene(req.params.roomId) || [] });
 });
 
 // Socket.io connection handling
