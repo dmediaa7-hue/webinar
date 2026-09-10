@@ -40,6 +40,13 @@ export default function LobbyScreen() {
   }, [media.error]);
 
   useEffect(() => {
+    const el = videoRef.current;
+    if (el && media.stream) {
+      el.srcObject = media.stream;
+    }
+  }, [media.stream]);
+
+  useEffect(() => {
     if (media.stream) media.getDevices();
   }, [media.stream]);
 
