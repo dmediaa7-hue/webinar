@@ -32,3 +32,5 @@ Thumbs.db
 
 # Misc
 *.md~
+# Local recording smoke artifacts
+RecSmoke/

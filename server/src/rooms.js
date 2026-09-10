@@ -208,10 +208,15 @@ function joinRoom(roomId, participant) {
     joinedAt: Date.now()
   };
 
-  // First participant is always host if no host exists
-  if (room.participants.size === 0 && !p.isHost) {
+  // Bind hostId even when the caller already passed isHost:true (REST-created
+  // rooms start with hostId:null) - otherwise a rejoin of the same socket
+  // computes isHost = (null === socket.id) and demotes the host.
+  if (room.participants.size === 0) {
     p.isHost = true;
     room.hostId = p.socketId;
+  } else if (p.socketId === room.hostId) {
+    // Bound host re-joining (reconnect / StrictMode double-join): keep host.
+    p.isHost = true;
   }
 
   room.participants.set(p.socketId, p);

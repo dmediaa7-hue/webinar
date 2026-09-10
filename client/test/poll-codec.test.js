@@ -36,6 +36,26 @@ test('poll create rejects fewer than 2 options', () => {
   assert.equal(decodePollMessage(encodePollMessage(msg)), null, 'decoder rejects invalid create');
 });
 
+test('poll create decodes ArrayBuffer payloads (Socket.io binary wire format)', () => {
+  const msg = buildPollCreate({ question: 'Best framework?', options: ['React', 'Vue'], creator: 'Host A', creatorId: 'sock-1' });
+  const wire = encodePollMessage(msg).slice().buffer;
+  assert.ok(wire instanceof ArrayBuffer, 'sender bytes land as ArrayBuffer on the wire');
+  const decoded = decodePollMessage(wire);
+  assert.ok(decoded, 'decodes to an object');
+  assert.equal(decoded.question, 'Best framework?');
+  assert.deepEqual(decoded.options, ['React', 'Vue']);
+});
+
+test('qa ask decodes ArrayBuffer payloads (Socket.io binary wire format)', () => {
+  const msg = buildQaAsk({ author: 'Alice', authorId: 'sock-2', body: 'Will slides be shared?' });
+  const wire = encodeQaMessage(msg).slice().buffer;
+  assert.ok(wire instanceof ArrayBuffer, 'sender bytes land as ArrayBuffer on the wire');
+  const decoded = decodeQaMessage(wire);
+  assert.ok(decoded, 'decodes to an object');
+  assert.equal(decoded.action, 'ask');
+  assert.equal(decoded.body, 'Will slides be shared?');
+});
+
 test('poll create caps options at 8 and trims blanks', () => {
   const msg = buildPollCreate({ question: 'Q?', options: [' a ', 'b', '', 'c', 'd', 'e', 'f', 'g', 'h', 'i'], creator: 'H', creatorId: 's' });
   assert.deepEqual(msg.options, ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h']);

@@ -18,6 +18,13 @@ test('decodeChatMessage accepts string payloads from the wire', () => {
   assert.deepEqual(decodeChatMessage(JSON.stringify(msg)), msg);
 });
 
+test('decodeChatMessage accepts ArrayBuffer payloads (Socket.io binary wire format)', () => {
+  const msg = buildChatMessage({ sender: 'A', senderId: 's1', message: 'hi over binary' });
+  const wire = encodeChatMessage(msg).slice().buffer;
+  assert.ok(wire instanceof ArrayBuffer, 'sender bytes land as ArrayBuffer on the wire');
+  assert.deepEqual(decodeChatMessage(wire), msg);
+});
+
 test('decodeChatMessage rejects malformed payloads', () => {
   assert.equal(decodeChatMessage('not json'), null);
   assert.equal(decodeChatMessage(''), null);

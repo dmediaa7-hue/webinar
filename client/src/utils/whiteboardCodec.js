@@ -97,10 +97,19 @@ function encode(msg) {
   return new TextEncoder().encode(JSON.stringify(msg));
 }
 
+function payloadToBytes(payload) {
+  if (payload instanceof Uint8Array) return new Uint8Array(payload);
+  if (payload instanceof ArrayBuffer) return new Uint8Array(payload);
+  if (ArrayBuffer.isView(payload)) {
+    return new Uint8Array(payload.buffer, payload.byteOffset, payload.byteLength);
+  }
+  return null;
+}
+
 function toText(payload) {
   if (typeof payload === 'string') return payload;
-  if (payload instanceof Uint8Array) return new TextDecoder().decode(payload);
-  return null;
+  const bytes = payloadToBytes(payload);
+  return bytes ? new TextDecoder().decode(bytes) : null;
 }
 
 function parse(text) {

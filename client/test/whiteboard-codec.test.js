@@ -36,6 +36,23 @@ test('scene-delta round-trips through encode/decode', () => {
   assert.deepEqual(decoded.removed, ['e3']);
 });
 
+test('scene-delta decodes ArrayBuffer payloads (Socket.io binary wire format)', () => {
+  const msg = buildWhiteboardDelta({
+    senderId: 'sock-1',
+    senderName: 'Host A',
+    seq: 3,
+    changed: [el('e1', 2)],
+    removed: ['e3']
+  });
+  const wire = encodeWhiteboardMessage(msg).slice().buffer;
+  assert.ok(wire instanceof ArrayBuffer, 'sender bytes land as ArrayBuffer on the wire');
+  const decoded = decodeWhiteboardMessage(wire);
+  assert.ok(decoded, 'decodes to an object');
+  assert.equal(decoded.seq, 3);
+  assert.equal(decoded.changed[0].id, 'e1');
+  assert.deepEqual(decoded.removed, ['e3']);
+});
+
 test('decode rejects malformed messages', () => {
   assert.equal(decodeWhiteboardMessage(encodeWhiteboardMessage({ kind: 'chat', text: 'hi' })), null);
   assert.equal(decodeWhiteboardMessage(encodeWhiteboardMessage({ kind: 'whiteboard', action: 'full-scene' })), null);

@@ -23,6 +23,13 @@ test('decodeReaction accepts string payloads from the wire', () => {
   assert.deepEqual(decodeReaction(JSON.stringify(reaction)), reaction);
 });
 
+test('decodeReaction accepts ArrayBuffer payloads (Socket.io binary wire format)', () => {
+  const reaction = buildReaction({ emoji: '🎉', sender: 'A', senderId: 's1', ts: 1000 });
+  const wire = encodeReaction(reaction).slice().buffer;
+  assert.ok(wire instanceof ArrayBuffer, 'sender bytes land as ArrayBuffer on the wire');
+  assert.deepEqual(decodeReaction(wire), reaction);
+});
+
 test('decodeReaction rejects malformed or empty-emoji payloads', () => {
   assert.equal(decodeReaction('not json'), null);
   assert.equal(decodeReaction(''), null);

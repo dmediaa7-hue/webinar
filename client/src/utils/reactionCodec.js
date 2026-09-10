@@ -34,14 +34,23 @@ export function encodeReaction(reaction) {
   return new TextEncoder().encode(JSON.stringify(reaction));
 }
 
+function payloadToBytes(payload) {
+  if (payload instanceof Uint8Array) return new Uint8Array(payload);
+  if (payload instanceof ArrayBuffer) return new Uint8Array(payload);
+  if (ArrayBuffer.isView(payload)) {
+    return new Uint8Array(payload.buffer, payload.byteOffset, payload.byteLength);
+  }
+  return null;
+}
+
 export function decodeReaction(payload) {
   let text;
   if (typeof payload === 'string') {
     text = payload;
-  } else if (payload instanceof Uint8Array) {
-    text = new TextDecoder().decode(payload);
   } else {
-    return null;
+    const bytes = payloadToBytes(payload);
+    if (!bytes) return null;
+    text = new TextDecoder().decode(bytes);
   }
   try {
     const raw = JSON.parse(text);
