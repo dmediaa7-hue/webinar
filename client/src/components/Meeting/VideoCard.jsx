@@ -11,10 +11,10 @@ export default function VideoCard({ participant, stream, isLocal, isMuted, isVid
 
   useEffect(() => {
     const el = videoRef.current;
-    if (el && stream) {
+    if (el && stream && !isVideoOff) {
       el.srcObject = stream;
     }
-  }, [stream]);
+  }, [stream, isVideoOff]);
 
   const hasVideo = Boolean(stream && !isVideoOff);
   const mirrorClass = !isScreenSharing && isLocal ? ' mirrored-video' : '';

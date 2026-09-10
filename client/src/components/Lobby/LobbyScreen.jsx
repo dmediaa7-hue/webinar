@@ -22,17 +22,13 @@ export default function LobbyScreen() {
   const videoRef = useRef(null);
 
   useEffect(() => {
-    let cancelled = false;
     const constraints = {
       audio: micEnabled ? (micDeviceId ? { deviceId: micDeviceId } : MEDIA_CONSTRAINTS.audio) : false,
       video: cameraEnabled
         ? (cameraDeviceId ? { deviceId: cameraDeviceId } : MEDIA_CONSTRAINTS.video)
         : false
     };
-    media.startMedia(constraints).then((s) => {
-      if (cancelled && s) s.getTracks().forEach((t) => t.stop());
-    });
-    return () => { cancelled = true; };
+    media.startMedia(constraints);
   }, [micEnabled, cameraEnabled, micDeviceId, cameraDeviceId, previewKey]);
 
   useEffect(() => {
@@ -44,7 +40,7 @@ export default function LobbyScreen() {
     if (el && media.stream) {
       el.srcObject = media.stream;
     }
-  }, [media.stream]);
+  }, [media.stream, cameraEnabled]);
 
   useEffect(() => {
     if (media.stream) media.getDevices();

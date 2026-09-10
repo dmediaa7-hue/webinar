@@ -11,15 +11,16 @@ export function useMedia() {
   const [error, setError] = useState(null);
   const [devices, setDevices] = useState({ cameras: [], microphones: [] });
   const streamRef = useRef(null);
+  const acquisitionIdRef = useRef(0);
+  const startMediaChainRef = useRef(Promise.resolve());
 
   /**
    * Get available media devices
    */
   const getDevices = useCallback(async () => {
     try {
-      // Request permission first
-      await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
-      
+      // Permission is already granted by startMedia, so enumerateDevices
+      // returns labeled devices without acquiring the camera again.
       const devicesList = await navigator.mediaDevices.enumerateDevices();
       const cameras = devicesList.filter(d => d.kind === 'videoinput');
       const microphones = devicesList.filter(d => d.kind === 'audioinput');
@@ -34,17 +35,37 @@ export function useMedia() {
    * Start local media stream
    */
   const startMedia = useCallback(async (constraints = MEDIA_CONSTRAINTS) => {
-    try {
-      setError(null);
-      const localStream = await navigator.mediaDevices.getUserMedia(constraints);
-      streamRef.current = localStream;
-      setStream(localStream);
-      return localStream;
-    } catch (err) {
-      console.error('Failed to access media:', err);
-      setError(err.message || 'Failed to access camera/microphone');
-      return null;
-    }
+    const acquisitionId = ++acquisitionIdRef.current;
+    // Serialize acquisitions: concurrent getUserMedia(video) calls on a real
+    // camera throw NotReadableError ('Device in use'), e.g. under React
+    // StrictMode double-mount or rapid toggle clicks. Higher ids win;
+    // superseded calls skip acquiring entirely.
+    const run = startMediaChainRef.current.then(async () => {
+      if (acquisitionId !== acquisitionIdRef.current) return null;
+      try {
+        setError(null);
+        // Stop previous tracks first: re-acquiring a still-held camera fails with 'Device in use' on real hardware
+        if (streamRef.current) {
+          streamRef.current.getTracks().forEach((track) => track.stop());
+          streamRef.current = null;
+        }
+        const localStream = await navigator.mediaDevices.getUserMedia(constraints);
+        if (acquisitionId !== acquisitionIdRef.current) {
+          localStream.getTracks().forEach((track) => track.stop());
+          return null;
+        }
+        streamRef.current = localStream;
+        setStream(localStream);
+        return localStream;
+      } catch (err) {
+        if (acquisitionId !== acquisitionIdRef.current) return null;
+        console.error('Failed to access media:', err);
+        setError(err.message || 'Failed to access camera/microphone');
+        return null;
+      }
+    });
+    startMediaChainRef.current = run.catch(() => {});
+    return run;
   }, []);
 
   /**
