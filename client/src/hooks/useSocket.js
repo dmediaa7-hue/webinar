@@ -255,8 +255,16 @@ export function joinRoom(roomId, displayName, password = null) {
 export async function roomRequiresPassword(roomId) {
   const res = await fetch(`${SERVER_URL}/api/rooms/${roomId}`);
   if (!res.ok) {
-    const err = new Error('Room not found');
+    let err = new Error('Room not found');
     err.code = 'ROOM_NOT_FOUND';
+    try {
+      const body = await res.json();
+      if (body && (body.code === 'MEETING_ENDED' || body.code === 'MEETING_NOT_STARTED')) {
+        err = new Error(body.error || err.message);
+        err.code = body.code;
+        err.meeting = body.meeting || null;
+      }
+    } catch { /* non-JSON body: keep ROOM_NOT_FOUND */ }
     throw err;
   }
   const data = await res.json();

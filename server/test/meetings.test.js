@@ -167,6 +167,33 @@ test('schema init is idempotent (re-run safe)', () => {
   db.close();
 });
 
+test('createRoomWithHash replicates the scheduled passcode and settings (task 18)', () => {
+  const db = newDb();
+  const hostUserId = insertUser(db);
+  const meeting = meetings.createMeeting({
+    hostUserId,
+    title: 'Scheduled Room',
+    startTime: Date.now() + 3600 * 1000,
+    endTime: Date.now() + 7200 * 1000,
+    passcode: '4242',
+    waitingRoomEnabled: true
+  }, db);
+  const row = meetings.getMeetingRow(meeting.id, db);
+
+  const live = rooms.createRoomWithHash(meeting.id, {
+    hostName: 'Host',
+    roomName: meeting.title,
+    passwordHash: row.passcode_hash,
+    waitingRoomEnabled: true
+  }, db);
+
+  assert.equal(live.settings.waitingRoomEnabled, true);
+  assert.equal(rooms.roomHasPassword(live), true, 'room is passcode-protected');
+  assert.equal(rooms.verifyPassword(live, '4242'), true, 'original passcode still validates');
+  assert.equal(rooms.verifyPassword(live, 'wrong'), false, 'wrong passcode rejected');
+  db.close();
+});
+
 test('meetings persist across database reopen (file-backed)', () => {
   const os = require('os');
   const path = require('path');

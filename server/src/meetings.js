@@ -88,6 +88,15 @@ function getMeeting(id, db = defaultDb) {
 }
 
 /**
+ * Internal: raw row including passcode_hash. Used only by the server-side
+ * "start meeting" flow to replicate the passcode onto the live room; never
+ * serialized to API responses (getMeeting stays hash-free).
+ */
+function getMeetingRow(id, db = defaultDb) {
+  return db.prepare('SELECT * FROM scheduled_meetings WHERE id = ?').get(id);
+}
+
+/**
  * List scheduled meetings, optionally filtered by host and/or a "from" time.
  * @param {object} [filters] { hostUserId?, fromTime? }
  */
@@ -118,6 +127,7 @@ function deleteMeeting(id, db = defaultDb) {
 module.exports = {
   createMeeting,
   getMeeting,
+  getMeetingRow,
   listMeetings,
   deleteMeeting,
   hashPasscode,

@@ -23,6 +23,7 @@ const useStore = create((set, get) => ({
   // Auth state
   isLoggedIn: !!localStorage.getItem('webinar-auth'),
   username: localStorage.getItem('webinar-username') || '',
+  user: null, // { id, email, name } from the server session
   role: 'admin',
 
   // User state
@@ -231,16 +232,17 @@ const useStore = create((set, get) => ({
     });
   },
 
-  login: (username) => {
+  login: (user) => {
+    const shownName = user?.name || user?.email || 'Guest';
     localStorage.setItem('webinar-auth', 'true');
-    localStorage.setItem('webinar-username', username);
-    set({ isLoggedIn: true, username });
+    localStorage.setItem('webinar-username', shownName);
+    set({ isLoggedIn: true, username: shownName, user: user || null });
   },
 
   logout: () => {
     localStorage.removeItem('webinar-auth');
     localStorage.removeItem('webinar-username');
-    set({ isLoggedIn: false, username: '' });
+    set({ isLoggedIn: false, username: '', user: null });
   },
 
   addParticipant: (participant) => {

@@ -6,7 +6,7 @@ const { Server } = require('socket.io');
 const { v4: uuidv4 } = require('uuid');
 require('dotenv').config();
 
-const { createRoom, joinRoom, leaveRoom, getRoom, getRooms, updateParticipant, updateRoomSettings, roomHasPassword, verifyPassword, getAttendance, addWaiting, getWaitingList, removeWaiting } = require('./rooms');
+const { createRoom, createRoomWithHash, joinRoom, leaveRoom, getRoom, getRooms, updateParticipant, updateRoomSettings, roomHasPassword, verifyPassword, getAttendance, addWaiting, getWaitingList, removeWaiting } = require('./rooms');
 const { handleSignaling } = require('./signaling');
 const { handleChat, getChatHistory } = require('./chat');
 const recording = require('./recording');
@@ -243,6 +243,36 @@ app.delete('/api/meetings/:id', auth.requireAuth, (req, res) => {
   res.json({ ok: true });
 });
 
+// Start a scheduled meeting (owner only): materializes the in-memory room
+// with the scheduled settings so /meeting/:id joins work. Idempotent - a
+// second start reuses the live room. An ended meeting refuses to start.
+app.post('/api/meetings/:id/start', auth.requireAuth, (req, res) => {
+  const row = meetings.getMeetingRow(req.params.id);
+  if (!row) return res.status(404).json({ error: 'Meeting not found' });
+  if (row.host_user_id !== req.user.id) return res.status(403).json({ error: 'Forbidden' });
+  if (Date.now() > row.end_time) {
+    return res.status(410).json({ error: 'This meeting has ended', code: 'MEETING_ENDED' });
+  }
+
+  let room = getRoom(row.id);
+  if (!room) {
+    room = createRoomWithHash(row.id, {
+      hostName: req.user.name,
+      roomName: row.title,
+      passwordHash: row.passcode_hash || null,
+      waitingRoomEnabled: Boolean(row.waiting_room_enabled),
+      isLocked: false
+    });
+  }
+  const meeting = meetings.getMeeting(row.id);
+  res.json({
+    roomId: row.id,
+    roomName: meeting.roomName || row.title,
+    hasPassword: Boolean(row.passcode_hash),
+    invite: invite.inviteFor(meeting)
+  });
+});
+
 // Create room
 app.post('/api/rooms', (req, res) => {
   try {
@@ -262,10 +292,28 @@ app.post('/api/rooms', (req, res) => {
   }
 });
 
-// Get room info
+// Get room info. A room that has not been started (or has ended) surfaces its
+// scheduled-meeting status so guests with an invite link see a clear state
+// instead of a bare "not found".
 app.get('/api/rooms/:roomId', (req, res) => {
   const room = getRoom(req.params.roomId);
   if (!room) {
+    const scheduled = meetings.getMeetingRow(req.params.roomId);
+    if (scheduled) {
+      const now = Date.now();
+      if (now > scheduled.end_time) {
+        return res.status(410).json({
+          error: 'This meeting has ended',
+          code: 'MEETING_ENDED',
+          meeting: { title: scheduled.title, startTime: scheduled.start_time, endTime: scheduled.end_time }
+        });
+      }
+      return res.status(404).json({
+        error: 'This meeting has not started yet. The host will start it shortly.',
+        code: 'MEETING_NOT_STARTED',
+        meeting: { title: scheduled.title, startTime: scheduled.start_time, endTime: scheduled.end_time }
+      });
+    }
     return res.status(404).json({ error: 'Room not found' });
   }
   res.json({

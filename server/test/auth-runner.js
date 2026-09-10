@@ -157,6 +157,53 @@ async function run() {
     res = await client.request(`/api/meetings/${created.meeting.id}`);
     assert(res.status === 404, 'deleted meeting returns 404');
 
+    // --- Start a scheduled meeting (task 18) ---
+    // Ended meeting refuses to start.
+    const endedMeeting = await client.request('/api/meetings', {
+      method: 'POST',
+      body: JSON.stringify({
+        title: 'Ended Meeting',
+        startTime: Date.now() - 2 * 3600 * 1000,
+        endTime: Date.now() - 3600 * 1000
+      })
+    });
+    const ended = await endedMeeting.json();
+    res = await client.request(`/api/meetings/${ended.meeting.id}/start`, { method: 'POST', body: '{}' });
+    assert(res.status === 410, 'starting an ended meeting returns 410');
+
+    // Not-started meeting: /api/rooms/:id surfaces MEETING_NOT_STARTED.
+    const futureMeeting = await client.request('/api/meetings', {
+      method: 'POST',
+      body: JSON.stringify({
+        title: 'Future Sync',
+        startTime: Date.now() + 3600 * 1000,
+        endTime: Date.now() + 7200 * 1000,
+        roomName: 'future-sync',
+        passcode: '4242',
+        waitingRoomEnabled: true
+      })
+    });
+    const future = await futureMeeting.json();
+    res = await client.request(`/api/rooms/${future.meeting.id}`);
+    assert(res.status === 404, 'unstarted scheduled room returns 404');
+    const notStarted = await res.json();
+    assert(notStarted.code === 'MEETING_NOT_STARTED', 'unstarted room carries MEETING_NOT_STARTED code');
+
+    // Start materializes the room with the scheduled passcode + waiting room.
+    res = await client.request(`/api/meetings/${future.meeting.id}/start`, { method: 'POST', body: '{}' });
+    assert(res.status === 200, 'start returns 200 for a future meeting');
+    const started = await res.json();
+    assert(started.roomId === future.meeting.id && started.hasPassword === true, 'start surfaces roomId + hasPassword');
+
+    res = await client.request(`/api/rooms/${future.meeting.id}`);
+    assert(res.status === 200, 'room exists after start');
+    const roomInfo = await res.json();
+    assert(roomInfo.hasPassword === true, 'room inherits the scheduled passcode');
+    assert(roomInfo.settings.waitingRoomEnabled === true, 'room inherits the waiting-room toggle');
+
+    res = await client.request(`/api/meetings/${future.meeting.id}`, { method: 'DELETE', body: '{}' });
+    assert(res.status === 200, 'cleanup deletes the future meeting');
+
     console.log('\n=== Test Complete ===');
     console.log(`  Passed: ${passed}`);
     console.log(`  Failed: ${failed}`);

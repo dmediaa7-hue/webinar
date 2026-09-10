@@ -186,6 +186,9 @@ export default function MeetingRoom() {
       if (err.code === 'ROOM_NOT_FOUND') {
         setJoinError('Room not found. Check the meeting ID and try again.');
         setIsJoining(false);
+      } else if (err.code === 'MEETING_ENDED' || err.code === 'MEETING_NOT_STARTED') {
+        setJoinError(err.message || 'This meeting is not available.');
+        setIsJoining(false);
       } else {
         attemptJoin();
       }

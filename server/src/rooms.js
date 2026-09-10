@@ -107,6 +107,58 @@ function createRoom(roomId, hostName = 'Host', hostSocketId = null, password = n
   return room;
 }
 
+/**
+ * Create a room from a scheduled meeting (task 18): the passcode is already
+ * hashed (scheduled_meetings.passcode_hash) so it is applied directly without
+ * re-hashing, and the waiting-room toggle carries over. No host socket yet -
+ * the first arrival becomes host through the normal join-room path.
+ */
+function createRoomWithHash(roomId, { hostName = 'Host', hostSocketId = null, passwordHash = null, roomName = null, waitingRoomEnabled = false, isLocked = false, db = defaultDb } = {}) {
+  const room = {
+    id: roomId,
+    name: roomName || hostName + "'s Meeting",
+    hostId: hostSocketId,
+    hostName: hostName,
+    createdAt: Date.now(),
+    participants: new Map(),
+    waitingList: new Map(),
+    attendance: [],
+    settings: {
+      isLocked: Boolean(isLocked),
+      waitingRoomEnabled: Boolean(waitingRoomEnabled),
+      maxParticipants: Infinity
+    },
+    passwordHash,
+    isRecording: false,
+    recordingStartTime: null,
+    chatHistory: []
+  };
+
+  if (hostSocketId) {
+    room.participants.set(hostSocketId, {
+      socketId: hostSocketId,
+      userId: roomId + '-host',
+      displayName: hostName,
+      isHost: true,
+      isMuted: false,
+      isVideoOff: false,
+      isScreenSharing: false,
+      joinedAt: Date.now()
+    });
+    room.attendance.push({
+      socketId: hostSocketId,
+      userId: roomId + '-host',
+      displayName: hostName,
+      isHost: true,
+      joinedAt: Date.now()
+    });
+  }
+
+  rooms.set(roomId, room);
+  persistRoomMetadata(room, db);
+  return room;
+}
+
 /** Merge settings changes into a room and persist the metadata. */
 function updateRoomSettings(roomId, patch, db = defaultDb) {
   const room = rooms.get(roomId);
@@ -315,6 +367,7 @@ function getAttendance(roomId) {
 
 module.exports = {
   createRoom,
+  createRoomWithHash,
   joinRoom,
   leaveRoom,
   getRoom,
