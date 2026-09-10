@@ -59,10 +59,20 @@ export default function MeetingControls({
     const hostId = store.mySocketId;
     const folder = recordingFolder.trim();
 
+    if (!folder) {
+      setRecordingStatus('Enter a folder path first (hover the record button to set it)');
+      setTimeout(() => setRecordingStatus(''), 5000);
+      return;
+    }
+
     const localStream = store.localStream;
     const screenStream = store.screenShareStream;
     const sourceStream = store.isScreenSharing && screenStream ? screenStream : localStream;
-    if (!sourceStream) return;
+    if (!sourceStream) {
+      setRecordingStatus('No camera/mic stream available to record');
+      setTimeout(() => setRecordingStatus(''), 5000);
+      return;
+    }
 
     let audioDestination = null;
     let mixedStream = sourceStream;
@@ -118,6 +128,7 @@ export default function MeetingControls({
 
       const blob = new Blob(chunksRef.current, { type: recorder.mimeType });
       const filename = `recording-${roomId}-${Date.now()}.webm`;
+      chunksRef.current = [];
 
       setRecordingStatus('Uploading recording...');
       try {
@@ -164,7 +175,6 @@ export default function MeetingControls({
       recorder.stop();
     }
     recorderRef.current = null;
-    chunksRef.current = [];
     setLocalRecording(false);
 
     stopRecording();
