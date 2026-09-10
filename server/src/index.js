@@ -6,6 +6,15 @@ const { Server } = require('socket.io');
 const { v4: uuidv4 } = require('uuid');
 require('dotenv').config();
 
+// Committed production defaults (server/.env.production), applied only when the
+// process environment has not already set the key (override: false). This lets
+// the deployed server on Render know its public client origin without requiring
+// dashboard-managed env vars. Local server/.env always wins during development.
+require('dotenv').config({
+  path: require('path').join(__dirname, '..', '.env.production'),
+  override: false
+});
+
 const { createRoom, createRoomWithHash, joinRoom, leaveRoom, getRoom, getRooms, updateParticipant, updateRoomSettings, roomHasPassword, verifyPassword, getAttendance, addWaiting, getWaitingList, removeWaiting } = require('./rooms');
 const { handleSignaling } = require('./signaling');
 const { handleChat, getChatHistory } = require('./chat');

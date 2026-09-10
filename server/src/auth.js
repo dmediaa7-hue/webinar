@@ -70,7 +70,12 @@ function createSession(userId) {
     cookieValue: token,
     cookieOptions: {
       httpOnly: true,
-      sameSite: 'lax',
+      // The deployed SPA (dmatest.rf.gd) and API (onrender.com) are different
+      // registrable domains - a cross-site context. Browsers refuse to attach a
+      // 'lax' cookie to cross-site fetch(credentials:'include'), so production
+      // needs 'none' (requires Secure, which is set below on HTTPS). Same-origin
+      // deployments can force 'lax' via COOKIE_SAMESITE.
+      sameSite: process.env.COOKIE_SAMESITE || (process.env.NODE_ENV === 'production' ? 'none' : 'lax'),
       secure: process.env.NODE_ENV === 'production',
       maxAge: SESSION_TTL_MS,
       path: '/'
