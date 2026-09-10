@@ -24,7 +24,6 @@ const useStore = create((set, get) => ({
   isLoggedIn: !!localStorage.getItem('webinar-auth'),
   username: localStorage.getItem('webinar-username') || '',
   user: null, // { id, email, name } from the server session
-  role: 'admin',
 
   // User state
   displayName: '',
@@ -39,9 +38,6 @@ const useStore = create((set, get) => ({
 
   // Attendance log: [{ socketId, userId, displayName, isHost, joinedAt, leftAt }]
   attendance: [],
-
-  // Peer connections: Map of socketId -> SimplePeer
-  peers: new Map(),
 
   // Chat
   messages: [],
@@ -291,32 +287,6 @@ const useStore = create((set, get) => ({
 
   setAttendance: (attendance) => set({ attendance }),
 
-  addPeer: (socketId, peer) => {
-    const peers = new Map(get().peers);
-    peers.set(socketId, peer);
-    set({ peers });
-  },
-
-  removePeer: (socketId) => {
-    const peers = new Map(get().peers);
-    const peer = peers.get(socketId);
-    if (peer && !peer.destroyed) {
-      try { peer.destroy(); } catch (e) {}
-    }
-    peers.delete(socketId);
-    set({ peers });
-  },
-
-  clearPeers: () => {
-    const peers = get().peers;
-    peers.forEach(peer => {
-      if (!peer.destroyed) {
-        try { peer.destroy(); } catch (e) {}
-      }
-    });
-    set({ peers: new Map() });
-  },
-
   addMessage: (message) => {
     const messages = [...get().messages, message];
     // Keep last 200 messages
@@ -364,7 +334,6 @@ const useStore = create((set, get) => ({
     isConnecting: false,
     participants: new Map(),
     attendance: [],
-    peers: new Map(),
     messages: [],
     isTyping: false,
     typingUsers: new Set(),

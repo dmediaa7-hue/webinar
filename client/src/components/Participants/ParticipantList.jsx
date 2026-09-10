@@ -10,7 +10,6 @@ import { admitWaitingUser, denyWaitingUser, toggleWaitingRoom } from '../../hook
 export default function ParticipantList({
   onClose,
   isHost,
-  isAdmin,
   onMuteParticipant,
   onKickParticipant,
   onDownloadAttendance
@@ -217,8 +216,8 @@ export default function ParticipantList({
         </div>
       )}
 
-      {/* Attendance download (host or admin only) */}
-      {(isHost || isAdmin) && (
+      {/* Attendance download (host only) */}
+      {isHost && (
         <div className="px-4 py-3 border-t border-meeting-border flex gap-2">
           <button
             onClick={() => onDownloadAttendance('csv')}

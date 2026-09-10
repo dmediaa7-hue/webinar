@@ -3,7 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { Room, RoomEvent, Track } from 'livekit-client';
 import { RoomContext, useParticipants } from '@livekit/components-react';
 import useStore from '../../store/useStore';
-import { useSocket, joinRoom, leaveRoom, roomRequiresPassword, sendTyping, toggleAudio, toggleVideo, screenShareStarted, screenShareStopped, muteParticipant, kickParticipant, lockRoom, startRecording, stopRecording, getAttendance } from '../../hooks/useSocket';
+import { useSocket, joinRoom, leaveRoom, roomRequiresPassword, sendTyping, muteParticipant, kickParticipant, lockRoom, startRecording, stopRecording, getAttendance } from '../../hooks/useSocket';
 import { useLiveKitRoom } from '../../hooks/useLiveKitRoom';
 import { toggleScreenShare } from '../../utils/liveKitShare';
 import { createBackgroundProcessor } from '../../utils/virtualBackgrounds';
@@ -70,7 +70,6 @@ export default function MeetingRoom() {
   const activePanel = store((state) => state.activePanel);
   const isRecording = store((state) => state.isRecording);
   const storePassword = store((state) => state.roomPassword);
-  const isAdmin = store((state) => state.isLoggedIn && state.username === 'Admin');
   const isRoomLocked = store((state) => state.roomSettings?.isLocked);
   const mySocketId = store((state) => state.mySocketId);
   const waitingForRoom = store((state) => state.waitingForRoom);
@@ -299,7 +298,6 @@ export default function MeetingRoom() {
           screenStreamRef.current = new MediaStream([publication.track.mediaStreamTrack]);
           setIsScreenSharing(true);
         }
-        screenShareStarted();
       } else {
         refreshLocalStream();
       }
@@ -312,7 +310,6 @@ export default function MeetingRoom() {
           screenStreamRef.current = null;
         }
         setIsScreenSharing(false);
-        screenShareStopped();
       } else {
         refreshLocalStream();
       }
@@ -340,7 +337,6 @@ export default function MeetingRoom() {
     if (!room) return;
     const nextMuted = !room.localParticipant.isMicrophoneEnabled;
     room.localParticipant.setMicrophoneEnabled(!nextMuted);
-    toggleAudio(nextMuted);
   }, [liveKitRoom]);
 
   const handleToggleVideo = useCallback(() => {
@@ -351,7 +347,6 @@ export default function MeetingRoom() {
     const processor = bg ? createBackgroundProcessor(bg.mode, bg.imagePath) : null;
     // Re-apply the virtual background whenever the camera track is rebuilt.
     room.localParticipant.setCameraEnabled(!nextOff, !nextOff && processor ? { processor } : undefined);
-    toggleVideo(nextOff);
   }, [liveKitRoom]);
 
   const handleFlipCamera = useCallback(async () => {
@@ -665,7 +660,6 @@ export default function MeetingRoom() {
               <ParticipantList
                 onClose={() => togglePanel('participants')}
                 isHost={isHost}
-                isAdmin={isAdmin}
                 onMuteParticipant={handleMuteParticipant}
                 onKickParticipant={handleKickParticipant}
                 onDownloadAttendance={handleDownloadAttendance}

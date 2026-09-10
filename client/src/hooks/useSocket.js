@@ -29,7 +29,7 @@ export function useSocket() {
             roomId: state.roomId,
             displayName: state.displayName || localStorage.getItem('webinar-name') || 'Guest',
             password: state.roomPassword,
-            isAdmin: state.isLoggedIn && state.username === 'Admin'
+            isAdmin: false
           }, (response) => {
             if (!response?.success) {
               console.warn('[Socket] Auto-rejoin failed:', response?.error);
@@ -69,7 +69,6 @@ export function useSocket() {
       socket.on(EVENTS.PARTICIPANT_LEFT, ({ socketId, newHost }) => {
         console.log('[Socket] Participant left:', socketId);
         store.getState().removeParticipant(socketId);
-        store.getState().removePeer(socketId);
         store.getState().removeTypingUser(socketId);
         // If the host left, the successor (first remaining participant) takes over
         if (newHost) {
@@ -77,31 +76,6 @@ export function useSocket() {
           store.getState().updateParticipant(newHost, { isHost: true });
           store.getState().setIsHost(newHost === socket.id);
         }
-      });
-
-      // Media toggle events
-      socket.on(EVENTS.PARTICIPANT_AUDIO_TOGGLED, ({ socketId, isMuted }) => {
-        store.getState().updateParticipant(socketId, { isMuted });
-        // Pause/resume audio tracks
-        const p = store.getState().participants.get(socketId);
-        if (p?.stream) {
-          p.stream.getAudioTracks().forEach(track => {
-            track.enabled = !isMuted;
-          });
-        }
-      });
-
-      socket.on(EVENTS.PARTICIPANT_VIDEO_TOGGLED, ({ socketId, isVideoOff }) => {
-        store.getState().updateParticipant(socketId, { isVideoOff });
-      });
-
-      // Screen share events
-      socket.on(EVENTS.SCREEN_SHARE_STARTED, ({ socketId, displayName }) => {
-        store.getState().updateParticipant(socketId, { isScreenSharing: true });
-      });
-
-      socket.on(EVENTS.SCREEN_SHARE_STOPPED, ({ socketId }) => {
-        store.getState().updateParticipant(socketId, { isScreenSharing: false });
       });
 
       // Chat events
@@ -186,10 +160,6 @@ export function useSocket() {
       socket.off(EVENTS.ROOM_JOINED);
       socket.off(EVENTS.PARTICIPANT_JOINED);
       socket.off(EVENTS.PARTICIPANT_LEFT);
-      socket.off(EVENTS.PARTICIPANT_AUDIO_TOGGLED);
-      socket.off(EVENTS.PARTICIPANT_VIDEO_TOGGLED);
-      socket.off(EVENTS.SCREEN_SHARE_STARTED);
-      socket.off(EVENTS.SCREEN_SHARE_STOPPED);
       socket.off(EVENTS.USER_TYPING);
       socket.off(EVENTS.KICKED);
       socket.off(EVENTS.FORCE_MUTE);
@@ -223,24 +193,9 @@ const handleDenied = () => {
   window.location.href = '/?denied=true';
 };
 
-// Helper methods for actions
-export function createRoom(displayName, password = null, roomName = null) {
-  const { isLoggedIn, username } = useStore.getState();
-  return new Promise((resolve, reject) => {
-    socket.emit(EVENTS.CREATE_ROOM, { displayName, password, roomName, isAdmin: isLoggedIn && username === 'Admin' }, (response) => {
-      if (response?.success) {
-        resolve({ roomId: response.roomId, roomName: response.roomName, hasPassword: Boolean(response.hasPassword) });
-      } else {
-        reject(response?.error || 'Failed to create room');
-      }
-    });
-  });
-}
-
 export function joinRoom(roomId, displayName, password = null) {
-  const { isLoggedIn, username } = useStore.getState();
   return new Promise((resolve, reject) => {
-    socket.emit(EVENTS.JOIN_ROOM, { roomId, displayName, password, isAdmin: isLoggedIn && username === 'Admin' }, (response) => {
+    socket.emit(EVENTS.JOIN_ROOM, { roomId, displayName, password, isAdmin: false }, (response) => {
       if (response?.success) {
         resolve(response);
       } else {
@@ -277,22 +232,6 @@ export function leaveRoom() {
 
 export function sendTyping(isTyping) {
   socket.emit(EVENTS.TYPING_INDICATOR, { isTyping });
-}
-
-export function toggleAudio(isMuted) {
-  socket.emit(EVENTS.TOGGLE_AUDIO, { isMuted });
-}
-
-export function toggleVideo(isVideoOff) {
-  socket.emit(EVENTS.TOGGLE_VIDEO, { isVideoOff });
-}
-
-export function screenShareStarted() {
-  socket.emit(EVENTS.SCREEN_SHARE_STARTED);
-}
-
-export function screenShareStopped() {
-  socket.emit(EVENTS.SCREEN_SHARE_STOPPED);
 }
 
 export function muteParticipant(targetId) {
