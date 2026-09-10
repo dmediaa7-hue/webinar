@@ -1,37 +1,34 @@
-import React from 'react';
-import { Track } from 'livekit-client';
-import { VideoTrack, useLocalParticipant } from '@livekit/components-react';
+import React, { useRef, useEffect } from 'react';
 import { getInitials } from '../../utils/constants';
 import { MicOff, VideoOff, MonitorUp } from 'lucide-react';
 import { filterActiveReactions } from '../../utils/reactionCodec';
 
-// Renders one LiveKit tile from a TrackReferenceOrPlaceholder. Camera tiles
-// are mirrored; screen-share tiles (sourced from their own Track.Source)
-// stay unmirrored so overlaid text is not flipped.
-export default function VideoCard({ trackRef, isActiveSpeaker, reactions = [] }) {
-  const { localParticipant } = useLocalParticipant();
-  const isLocal = trackRef?.participant?.identity === localParticipant.identity;
-  const participant = trackRef?.participant;
+export default function VideoCard({ participant, stream, isLocal, isMuted, isVideoOff, isScreenSharing, reactions = [] }) {
+  const videoRef = useRef(null);
 
-  const displayName = participant?.name || participant?.displayName || participant?.identity || 'Guest';
+  const displayName = participant?.displayName || 'Guest';
+  const isParticipantHost = participant?.isHost;
 
-  // A placeholder track has withPlaceholder=true and no real track/publication.
-  const hasVideo = Boolean(trackRef?.track && trackRef.publication);
-  const isCamera = trackRef?.source === Track.Source.Camera;
-  const isScreenShare = trackRef?.source === Track.Source.ScreenShare;
+  useEffect(() => {
+    const el = videoRef.current;
+    if (el && stream) {
+      el.srcObject = stream;
+    }
+  }, [stream]);
 
-  const isMuted = Boolean(trackRef?.publication?.isMuted) || Boolean(participant?.isMicrophoneEnabled === false);
-  const isVideoOff = !hasVideo;
-
-  const mirrorClass = isCamera ? ' mirrored-video' : '';
+  const hasVideo = Boolean(stream && !isVideoOff);
+  const mirrorClass = !isScreenSharing && isLocal ? ' mirrored-video' : '';
 
   const activeReactions = filterActiveReactions(reactions, Date.now());
 
   return (
-    <div className={`video-container h-full w-full relative min-h-0 min-w-0 ${isActiveSpeaker ? 'active-indicator' : ''}`}>
+    <div className={`video-container h-full w-full relative min-h-0 min-w-0`}>
       {hasVideo && (
-        <VideoTrack
-          trackRef={trackRef}
+        <video
+          ref={videoRef}
+          autoPlay
+          playsInline
+          muted={isLocal}
           className={`w-full h-full object-cover${mirrorClass}`}
         />
       )}
@@ -47,7 +44,7 @@ export default function VideoCard({ trackRef, isActiveSpeaker, reactions = [] })
         </div>
       )}
 
-      {/* Avatar fallback when camera track has no published video */}
+      {/* Avatar fallback when no video */}
       {!hasVideo && (
         <div className="avatar-fallback">
           <div className="text-center">
@@ -62,7 +59,7 @@ export default function VideoCard({ trackRef, isActiveSpeaker, reactions = [] })
       )}
 
       {/* Screen sharing indicator */}
-      {isScreenShare && (
+      {isScreenSharing && (
         <div className="absolute top-2 left-2 px-2 py-1 bg-primary/90 rounded-full text-xs text-white flex items-center gap-1">
           <MonitorUp size={12} />
           Sharing
@@ -96,7 +93,7 @@ export default function VideoCard({ trackRef, isActiveSpeaker, reactions = [] })
       {/* Name label */}
       <div className="absolute bottom-2 right-2 px-2 py-0.5 bg-black/50 rounded text-xs text-gray-200">
         {displayName} {isLocal && '(You)'}
-        {participant?.metadata?.includes('host') && <span className="text-yellow-400 ml-1">👑</span>}
+        {isParticipantHost && <span className="text-yellow-400 ml-1">&#x1F451;</span>}
       </div>
     </div>
   );

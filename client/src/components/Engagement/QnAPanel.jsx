@@ -1,6 +1,5 @@
-import React, { useState, useEffect, useRef, useCallback, useContext } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { X, HelpCircle, ArrowBigUp, ArrowBigDown, CheckCircle2, Send } from 'lucide-react';
-import { RoomContext, useDataChannel } from '@livekit/components-react';
 import useStore from '../../store/useStore';
 import { SERVER_URL } from '../../utils/constants';
 import {
@@ -12,34 +11,17 @@ import {
   sortQaQuestions,
   MAX_BODY_LENGTH
 } from '../../utils/pollCodec';
-
-// Bridges the LiveKit 'qa' data channel into the store (same bridge pattern
-// as ChatChannel/PollChannel).
-function QaChannel({ onMessage, onSendReady }) {
-  const { send } = useDataChannel('qa', onMessage);
-
-  useEffect(() => {
-    onSendReady(send);
-    return () => onSendReady(null);
-  }, [send, onSendReady]);
-
-  return null;
-}
+import useCollabChannel from '../../hooks/useCollabChannel';
 
 export default function QnAPanel({ onClose, roomId }) {
   const qaQuestions = useStore((state) => state.qaQuestions);
   const mySocketId = useStore((state) => state.mySocketId);
   const isHost = useStore((state) => state.isHost);
   const displayName = useStore((state) => state.displayName);
-  const liveKitRoom = useContext(RoomContext);
 
   const [input, setInput] = useState('');
-  const [hasChannel, setHasChannel] = useState(false);
   const [formError, setFormError] = useState('');
-  const sendRef = useRef(null);
 
-  // Restore persisted questions (server includes per-voter deltas so each
-  // participant's own vote position survives a refresh).
   useEffect(() => {
     let cancelled = false;
     fetch(`${SERVER_URL}/api/rooms/${roomId}/qa`)
@@ -51,15 +33,12 @@ export default function QnAPanel({ onClose, roomId }) {
     return () => { cancelled = true; };
   }, [roomId]);
 
-  const handleIncoming = useCallback((msg) => {
-    const decoded = decodeQaMessage(msg.payload);
+  const handleIncoming = useCallback((payload) => {
+    const decoded = decodeQaMessage(payload);
     if (decoded) useStore.getState().applyQaMessage(decoded);
   }, []);
 
-  const markSendReady = useCallback((send) => {
-    sendRef.current = send;
-    setHasChannel(Boolean(send));
-  }, []);
+  const { send } = useCollabChannel('qa', handleIncoming);
 
   const api = useCallback((path, options) => fetch(`${SERVER_URL}${path}`, options), []);
 
@@ -84,9 +63,8 @@ export default function QnAPanel({ onClose, roomId }) {
         body: data.question.body,
         createdAt: data.question.createdAt
       });
-      // Sender is not echoed on data channels; apply optimistically.
       useStore.getState().applyQaMessage(question);
-      sendRef.current?.(encodeQaMessage(question), { reliable: true });
+      send(encodeQaMessage(question));
       setInput('');
     } catch {
       setFormError('Could not reach the server.');
@@ -95,11 +73,10 @@ export default function QnAPanel({ onClose, roomId }) {
 
   const castVote = (question, delta) => {
     const myDelta = question.votes.get(mySocketId) || 0;
-    // Clicking the same direction again toggles back to neutral.
     const nextDelta = myDelta === delta ? 0 : delta;
     const vote = buildQaVote({ questionId: question.questionId, voterId: mySocketId, delta: nextDelta });
     useStore.getState().applyQaMessage(vote);
-    sendRef.current?.(encodeQaMessage(vote), { reliable: true });
+    send(encodeQaMessage(vote));
     api(`/api/rooms/${roomId}/qa/${question.questionId}/vote`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -110,7 +87,7 @@ export default function QnAPanel({ onClose, roomId }) {
   const toggleAnswered = (question) => {
     const message = buildQaAnswered({ questionId: question.questionId, isAnswered: !question.isAnswered });
     useStore.getState().applyQaMessage(message);
-    sendRef.current?.(encodeQaMessage(message), { reliable: true });
+    send(encodeQaMessage(message));
     api(`/api/rooms/${roomId}/qa/${question.questionId}/answered`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'x-host-id': mySocketId },
@@ -122,8 +99,6 @@ export default function QnAPanel({ onClose, roomId }) {
 
   return (
     <div className="panel h-full">
-      {liveKitRoom && <QaChannel onMessage={handleIncoming} onSendReady={markSendReady} />}
-
       <div className="px-4 py-3 border-b border-meeting-border flex items-center justify-between">
         <h3 className="font-semibold text-sm flex items-center gap-2">
           <HelpCircle size={16} className="text-primary" /> Q&A
@@ -143,12 +118,11 @@ export default function QnAPanel({ onClose, roomId }) {
             onKeyDown={(e) => { if (e.key === 'Enter') askQuestion(); }}
             placeholder="Ask a question…"
             maxLength={MAX_BODY_LENGTH}
-            disabled={!hasChannel}
-            className="flex-1 px-3 py-2 bg-meeting-bg border border-meeting-border rounded-lg text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-primary disabled:opacity-50"
+            className="flex-1 px-3 py-2 bg-meeting-bg border border-meeting-border rounded-lg text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-primary"
           />
           <button
             onClick={askQuestion}
-            disabled={!input.trim() || !hasChannel}
+            disabled={!input.trim()}
             className="p-2 bg-primary hover:bg-primary-dark rounded-lg transition-colors disabled:opacity-50"
             aria-label="Ask question"
           >

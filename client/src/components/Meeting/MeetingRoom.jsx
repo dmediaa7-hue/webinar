@@ -1,33 +1,27 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { Room, RoomEvent, Track } from 'livekit-client';
-import { RoomContext, useParticipants } from '@livekit/components-react';
 import useStore from '../../store/useStore';
-import { useSocket, joinRoom, leaveRoom, roomRequiresPassword, sendTyping, muteParticipant, kickParticipant, lockRoom, startRecording, stopRecording, getAttendance } from '../../hooks/useSocket';
-import { useLiveKitRoom } from '../../hooks/useLiveKitRoom';
-import { toggleScreenShare } from '../../utils/liveKitShare';
-import { createBackgroundProcessor } from '../../utils/virtualBackgrounds';
-import { useLiveKitSync } from '../../hooks/useLiveKitSync';
+import { useSocket, joinRoom, leaveRoom, roomRequiresPassword, sendTyping, muteParticipant, kickParticipant, lockRoom, getAttendance } from '../../hooks/useSocket';
+import { useWebRTC } from '../../hooks/useWebRTC';
+import { useMedia } from '../../hooks/useMedia';
+import { MEDIA_CONSTRAINTS, EVENTS } from '../../utils/constants';
 import { downloadAttendanceCSV, downloadAttendancePDF } from '../../utils/attendanceExport';
 import VideoGrid from './VideoGrid';
 import MeetingControls from './MeetingControls';
 import ChatPanel from '../Chat/ChatPanel';
 import ParticipantList from '../Participants/ParticipantList';
-import CaptionsOverlay from '../Captions/CaptionsOverlay';
-import CaptionsPanel from '../Captions/CaptionsPanel';
 import BreakoutPanel from '../Breakout/BreakoutPanel';
 import PollPanel from '../Engagement/PollPanel';
 import QnAPanel from '../Engagement/QnAPanel';
 import WhiteboardPanel from '../Whiteboard/WhiteboardPanel';
 import WaitingRoomScreen from './WaitingRoomScreen';
-import { breakoutRoomLabel } from '../../utils/breakout';
 import Modal from '../ui/Modal';
 import Button from '../ui/Button';
-import { Video, Users, Link, Copy, Check, Shield, Maximize2, Minimize2, AlertTriangle } from 'lucide-react';
+import { Video, Users, Link, Copy, Check, Shield, Maximize2, Minimize2 } from 'lucide-react';
 
 function ParticipantCount() {
-  const participants = useParticipants();
-  return <span>{participants.length}</span>;
+  const count = useStore((s) => s.participants.size);
+  return <span>{count}</span>;
 }
 
 export default function MeetingRoom() {
@@ -36,7 +30,6 @@ export default function MeetingRoom() {
   const socket = useSocket();
   const store = useStore;
 
-  // Room state
   const [isJoining, setIsJoining] = useState(true);
   const [joinError, setJoinError] = useState('');
   const [needsName, setNeedsName] = useState(false);
@@ -53,16 +46,20 @@ export default function MeetingRoom() {
   const [isMuted, setIsMuted] = useState(false);
   const [isVideoOff, setIsVideoOff] = useState(false);
   const [techNotice, setTechNotice] = useState('');
-  const [breakoutLabel, setBreakoutLabel] = useState(null);
 
-  // LiveKit media layer (token fetch + connect/disconnect)
-  const { room: liveKitRoom, isConfigured, connect: connectLiveKit, disconnect: disconnectLiveKit } = useLiveKitRoom();
-  useLiveKitSync(liveKitRoom);
+  const {
+    createPeer,
+    handleOffer,
+    handleAnswer,
+    handleIceCandidate,
+    cleanupPeer,
+    cleanupAllPeers,
+    replaceLocalStream
+  } = useWebRTC(socket);
 
-  // MediaStream holding the local screen-share track (before publishing picks it up)
-  const screenStreamRef = useRef(null);
+  const media = useMedia();
+  const mediaStartedRef = useRef(false);
 
-  // Selectors
   const displayName = store((state) => state.displayName) || localStorage.getItem('webinar-name') || 'Guest';
   const roomName = store((state) => state.roomName);
   const participants = store((state) => state.participants);
@@ -74,6 +71,10 @@ export default function MeetingRoom() {
   const mySocketId = store((state) => state.mySocketId);
   const waitingForRoom = store((state) => state.waitingForRoom);
   const waitingRoomId = store((state) => state.waitingRoomId);
+  const localStream = store((state) => state.localStream);
+  const joinedRoomId = store((state) => state.roomId);
+  const mediaConnected = Boolean(localStream);
+  const cameraStreamRef = useRef(null);
 
   const getInviteLink = () => `${window.location.origin}/join?room=${roomId}`;
 
@@ -133,7 +134,6 @@ export default function MeetingRoom() {
 
       const result = await joinRoom(roomId, name, password);
       if (result?.waiting) {
-        // Host holds us until admission: no media token, no LiveKit connect.
         store.getState().setWaitingForRoom(true);
         store.getState().setWaitingRoomId(roomId);
         setIsJoining(false);
@@ -214,45 +214,104 @@ export default function MeetingRoom() {
 
     return () => {
       leaveRoom();
-      disconnectLiveKit();
+      cleanupAllPeers();
+      media.stopStream();
       store.getState().resetAll();
       exitFullscreen().catch(() => {});
     };
-  }, [roomId, disconnectLiveKit]);
+  }, [roomId]);
 
-  // After the socket join succeeds the store has roomId + isHost; connect to
-  // the LiveKit room so media flows through the SFU.
-  const liveKitConnectAttemptedRef = useRef(false);
   useEffect(() => {
-    const state = store.getState();
-    if (liveKitConnectAttemptedRef.current) return;
-    if (state.roomId !== roomId) return;
-    if (state.waitingForRoom) return;
-    if (isConfigured === false) {
-      setTechNotice('LiveKit is not configured. Add LIVEKIT_URL, LIVEKIT_API_KEY and LIVEKIT_API_SECRET to server/.env to enable audio and video.');
-      return;
-    }
-    if (!socket?.id) return;
-    liveKitConnectAttemptedRef.current = true;
-    const name = state.displayName || localStorage.getItem('webinar-name') || 'Guest';
-    const bg = state.backgroundChoice;
-    const videoProcessor = bg ? createBackgroundProcessor(bg.mode, bg.imagePath) : null;
-    connectLiveKit({
-      roomName: roomId,
-      identity: socket.id,
-      name,
-      roomAdmin: state.isHost,
-      audio: true,
-      video: true,
-      videoProcessor
-    }).catch((err) => {
-      if (err?.code === 'LIVEKIT_NOT_CONFIGURED') {
-        setTechNotice('LiveKit is not configured. Add LIVEKIT_URL, LIVEKIT_API_KEY and LIVEKIT_API_SECRET to server/.env to enable audio and video.');
+    if (!joinedRoomId || joinedRoomId !== roomId) return;
+    if (waitingForRoom) return;
+    if (mediaStartedRef.current) return;
+    mediaStartedRef.current = true;
+
+    media.startMedia(MEDIA_CONSTRAINTS).then((stream) => {
+      if (stream) {
+        cameraStreamRef.current = stream;
+        store.getState().setLocalStream(stream);
       } else {
-        setTechNotice(err?.message || 'Unable to connect to the media server.');
+        setTechNotice('Unable to access camera/microphone. Check your browser permissions and try again.');
       }
     });
-  }, [roomId, isConfigured, socket, connectLiveKit]);
+  }, [joinedRoomId, roomId, waitingForRoom]);
+
+  // createPeer bails without local media, so re-initiate to existing room
+  // participants once media lands (idempotent; covers the pre-media window).
+  useEffect(() => {
+    if (!localStream) return;
+    if (!joinedRoomId || joinedRoomId !== roomId) return;
+    if (waitingForRoom) return;
+    store.getState().participants.forEach((p, socketId) => {
+      if (socketId !== socket.id) {
+        createPeer(socketId, true);
+      }
+    });
+  }, [localStream, joinedRoomId, roomId, waitingForRoom]);
+
+  // Wire signaling listeners
+  useEffect(() => {
+    if (!socket) return;
+
+    socket.on(EVENTS.OFFER, ({ from, fromName, sdp }) => handleOffer(from, fromName, sdp));
+    socket.on(EVENTS.ANSWER, ({ from, sdp }) => handleAnswer(from, sdp));
+    socket.on(EVENTS.ICE_CANDIDATE, ({ from, candidate }) => handleIceCandidate(from, candidate));
+
+    const onParticipantLeft = ({ socketId }) => {
+      cleanupPeer(socketId);
+    };
+
+    socket.on(EVENTS.PARTICIPANT_LEFT, onParticipantLeft);
+
+    socket.on(EVENTS.PARTICIPANT_JOINED, ({ participant }) => {
+      if (participant.socketId !== socket.id) {
+        createPeer(participant.socketId, false);
+      }
+    });
+
+    socket.on(EVENTS.ROOM_JOINED, ({ participants: roomParticipants }) => {
+      store.getState().participants.forEach((p, socketId) => {
+        if (socketId !== socket.id) {
+          createPeer(socketId, true);
+        }
+      });
+    });
+
+    socket.on(EVENTS.PARTICIPANT_AUDIO_TOGGLED, ({ socketId, isMuted: muted }) => {
+      store.getState().updateParticipant(socketId, { isMuted: muted });
+    });
+
+    socket.on(EVENTS.PARTICIPANT_VIDEO_TOGGLED, ({ socketId, isVideoOff: videoOff }) => {
+      store.getState().updateParticipant(socketId, { isVideoOff: videoOff });
+    });
+
+    socket.on(EVENTS.SCREEN_SHARE_STARTED, ({ socketId }) => {
+      store.getState().updateParticipant(socketId, { isScreenSharing: true });
+    });
+
+    socket.on(EVENTS.SCREEN_SHARE_STOPPED, ({ socketId }) => {
+      store.getState().updateParticipant(socketId, { isScreenSharing: false });
+    });
+
+    socket.on('force-stop-screen-share', () => handleStopScreenShare());
+
+    return () => {
+      socket.off(EVENTS.OFFER);
+      socket.off(EVENTS.ANSWER);
+      socket.off(EVENTS.ICE_CANDIDATE);
+      socket.off(EVENTS.PARTICIPANT_LEFT, onParticipantLeft);
+      socket.off(EVENTS.PARTICIPANT_JOINED);
+      socket.off(EVENTS.ROOM_JOINED);
+      socket.off(EVENTS.PARTICIPANT_AUDIO_TOGGLED);
+      socket.off(EVENTS.PARTICIPANT_VIDEO_TOGGLED);
+      socket.off(EVENTS.SCREEN_SHARE_STARTED);
+      socket.off(EVENTS.SCREEN_SHARE_STOPPED);
+      socket.off('force-stop-screen-share');
+      cleanupAllPeers();
+      media.stopStream();
+    };
+  }, [socket]);
 
   const handlePasswordSubmit = (e) => {
     e.preventDefault();
@@ -264,135 +323,73 @@ export default function MeetingRoom() {
     attemptJoin(passwordInput.trim());
   };
 
-  // Reflect local participant state (mute/camera/screen) from LiveKit events
-  // and rebuild the local MediaStream when tracks are (un)published.
-  useEffect(() => {
-    const room = liveKitRoom;
-    if (!room) return;
-    const local = room.localParticipant;
-
-    const refreshLocalStream = () => {
-      const camPub = local.getTrackPublication(Track.Source.Camera);
-      const micPub = local.getTrackPublication(Track.Source.Microphone);
-      const ms = new MediaStream();
-      if (camPub?.track?.mediaStreamTrack) ms.addTrack(camPub.track.mediaStreamTrack);
-      if (micPub?.track?.mediaStreamTrack) ms.addTrack(micPub.track.mediaStreamTrack);
-      store.getState().setLocalStream(ms);
-    };
-
-    const onTrackMuted = (publication, participant) => {
-      if (participant.identity !== local.identity) return;
-      if (publication.source === Track.Source.Microphone) setIsMuted(true);
-      if (publication.source === Track.Source.Camera) setIsVideoOff(true);
-    };
-
-    const onTrackUnmuted = (publication, participant) => {
-      if (participant.identity !== local.identity) return;
-      if (publication.source === Track.Source.Microphone) setIsMuted(false);
-      if (publication.source === Track.Source.Camera) setIsVideoOff(false);
-    };
-
-    const onLocalTrackPublished = (publication) => {
-      if (publication.source === Track.Source.ScreenShare) {
-        if (publication.track?.mediaStreamTrack) {
-          screenStreamRef.current = new MediaStream([publication.track.mediaStreamTrack]);
-          setIsScreenSharing(true);
-        }
-      } else {
-        refreshLocalStream();
-      }
-    };
-
-    const onLocalTrackUnpublished = (publication) => {
-      if (publication.source === Track.Source.ScreenShare) {
-        if (screenStreamRef.current) {
-          screenStreamRef.current.getTracks().forEach((t) => t.stop());
-          screenStreamRef.current = null;
-        }
-        setIsScreenSharing(false);
-      } else {
-        refreshLocalStream();
-      }
-    };
-
-    setIsMuted(!local.isMicrophoneEnabled);
-    setIsVideoOff(!local.isCameraEnabled);
-    refreshLocalStream();
-
-    room.on(RoomEvent.TrackMuted, onTrackMuted);
-    room.on(RoomEvent.TrackUnmuted, onTrackUnmuted);
-    room.on(RoomEvent.LocalTrackPublished, onLocalTrackPublished);
-    room.on(RoomEvent.LocalTrackUnpublished, onLocalTrackUnpublished);
-
-    return () => {
-      room.off(RoomEvent.TrackMuted, onTrackMuted);
-      room.off(RoomEvent.TrackUnmuted, onTrackUnmuted);
-      room.off(RoomEvent.LocalTrackPublished, onLocalTrackPublished);
-      room.off(RoomEvent.LocalTrackUnpublished, onLocalTrackUnpublished);
-    };
-  }, [liveKitRoom]);
-
   const handleToggleMute = useCallback(() => {
-    const room = liveKitRoom;
-    if (!room) return;
-    const nextMuted = !room.localParticipant.isMicrophoneEnabled;
-    room.localParticipant.setMicrophoneEnabled(!nextMuted);
-  }, [liveKitRoom]);
+    media.toggleMute();
+    const nextMuted = !isMuted;
+    setIsMuted(nextMuted);
+    store.getState().setIsMuted(nextMuted);
+    socket.emit(EVENTS.TOGGLE_AUDIO, { isMuted: nextMuted });
+  }, [isMuted, socket]);
 
   const handleToggleVideo = useCallback(() => {
-    const room = liveKitRoom;
-    if (!room) return;
-    const nextOff = !room.localParticipant.isCameraEnabled;
-    const bg = store.getState().backgroundChoice;
-    const processor = bg ? createBackgroundProcessor(bg.mode, bg.imagePath) : null;
-    // Re-apply the virtual background whenever the camera track is rebuilt.
-    room.localParticipant.setCameraEnabled(!nextOff, !nextOff && processor ? { processor } : undefined);
-  }, [liveKitRoom]);
+    media.toggleVideo();
+    const nextOff = !isVideoOff;
+    setIsVideoOff(nextOff);
+    store.getState().setIsVideoOff(nextOff);
+    socket.emit(EVENTS.TOGGLE_VIDEO, { isVideoOff: nextOff });
+  }, [isVideoOff, socket]);
 
   const handleFlipCamera = useCallback(async () => {
-    const room = liveKitRoom;
-    if (!room) return;
-    try {
-      const devices = await Room.getLocalDevices('videoinput');
-      if (devices.length < 2) return;
-      const current = room.localParticipant
-        .getTrackPublication(Track.Source.Camera)
-        ?.track?.mediaStreamTrack;
-      const currentId = current?.getSettings?.().deviceId;
-      const index = devices.findIndex((d) => d.deviceId === currentId);
-      const next = devices[(index + 1) % devices.length];
-      await room.switchActiveDevice('camera', next.deviceId);
-    } catch (e) {
-      console.warn('[LiveKit] Camera switch failed:', e);
+    const result = await media.flipCamera();
+    if (result) {
+      replaceLocalStream(store.getState().localStream);
     }
-  }, [liveKitRoom]);
+  }, [media]);
+
+  const handleStopScreenShare = useCallback(() => {
+    const storeState = store.getState();
+    const camStream = cameraStreamRef.current;
+    if (camStream) {
+      replaceLocalStream(camStream);
+    }
+    if (storeState.screenShareStream) {
+      storeState.screenShareStream.getTracks().forEach((t) => t.stop());
+    }
+    setIsScreenSharing(false);
+    store.getState().setIsScreenSharing(false);
+    store.getState().setScreenShareStream(null);
+    socket.emit(EVENTS.SCREEN_SHARE_STOPPED);
+  }, [socket]);
 
   const handleScreenShare = useCallback(async () => {
-    if (!liveKitRoom) return;
-    try {
-      await toggleScreenShare(liveKitRoom, isScreenSharing);
-    } catch (e) {
-      // User cancelled the share picker or capture is unavailable
+    if (isScreenSharing) {
+      handleStopScreenShare();
+      return;
     }
-  }, [liveKitRoom, isScreenSharing]);
+    const screenStream = await media.startScreenShare();
+    if (!screenStream) return;
+
+    replaceLocalStream(screenStream);
+    socket.emit(EVENTS.SCREEN_SHARE_STARTED);
+    setIsScreenSharing(true);
+    store.getState().setIsScreenSharing(true);
+    store.getState().setScreenShareStream(screenStream);
+
+    const videoTrack = screenStream.getVideoTracks()[0];
+    if (videoTrack) {
+      videoTrack.addEventListener('ended', handleStopScreenShare);
+    }
+  }, [isScreenSharing, socket, replaceLocalStream, handleStopScreenShare]);
 
   const handleLeave = useCallback(() => {
     store.getState().setLeftRoom(true);
     leaveRoom();
-    disconnectLiveKit();
+    cleanupAllPeers();
+    media.stopStream();
     store.getState().resetAll();
     exitFullscreen().catch(() => {});
     navigate('/');
-  }, [disconnectLiveKit, navigate]);
-
-  const handleToggleRecording = useCallback(() => {
-    if (!isHost) return;
-    if (isRecording) {
-      stopRecording();
-    } else {
-      startRecording();
-    }
-  }, [isHost, isRecording]);
+  }, [navigate]);
 
   const handleDownloadAttendance = useCallback(async (format) => {
     const res = await getAttendance();
@@ -418,20 +415,6 @@ export default function MeetingRoom() {
   const handleKickParticipant = (socketId) => kickParticipant(socketId);
   const handleToggleLock = () => lockRoom(!isRoomLocked);
 
-  // The host can move me into a breakout via moveParticipant; LiveKit fires
-  // RoomEvent.Moved with the new room name, so surface which room I'm in.
-  useEffect(() => {
-    const room = liveKitRoom;
-    if (!room) return;
-    const syncBreakoutLabel = () => setBreakoutLabel(breakoutRoomLabel(room.name, roomId));
-    room.on(RoomEvent.Moved, syncBreakoutLabel);
-    syncBreakoutLabel();
-    return () => {
-      room.off(RoomEvent.Moved, syncBreakoutLabel);
-    };
-  }, [liveKitRoom, roomId]);
-
-  // Loading state
   if (isCheckingRoom || isJoining) {
     return (
       <div className="app-screen-min bg-meeting-bg flex flex-col items-center justify-center">
@@ -441,7 +424,6 @@ export default function MeetingRoom() {
     );
   }
 
-  // Name prompt - guests joining via shared link
   if (needsName) {
     return (
       <div className="app-screen-min bg-meeting-bg flex flex-col items-center justify-center p-4">
@@ -486,7 +468,6 @@ export default function MeetingRoom() {
     );
   }
 
-  // Password prompt
   if (showPasswordPrompt) {
     return (
       <div className="app-screen-min bg-meeting-bg flex flex-col items-center justify-center p-4">
@@ -534,7 +515,6 @@ export default function MeetingRoom() {
     );
   }
 
-  // Error state
   if (joinError) {
     return (
       <div className="app-screen-min bg-meeting-bg flex flex-col items-center justify-center p-4">
@@ -551,7 +531,6 @@ export default function MeetingRoom() {
     );
   }
 
-  // Waiting room - held before the host admits us (no media until then)
   if (waitingForRoom) {
     return (
       <WaitingRoomScreen
@@ -563,8 +542,7 @@ export default function MeetingRoom() {
   }
 
   return (
-    <RoomContext.Provider value={liveKitRoom}>
-      <div className="app-screen flex flex-col bg-meeting-bg overflow-hidden">
+    <div className="app-screen flex flex-col bg-meeting-bg overflow-hidden">
       {/* Top bar */}
       <div className="px-4 py-2 flex items-center justify-between bg-meeting-surface border-b border-meeting-border h-12">
         <div className="flex items-center gap-3">
@@ -573,11 +551,6 @@ export default function MeetingRoom() {
           <span className="text-xs text-gray-400 bg-meeting-card px-2 py-1 rounded font-mono">
             {roomId?.toUpperCase()}
           </span>
-          {breakoutLabel && (
-            <span className="text-xs text-primary bg-primary/10 px-2 py-1 rounded font-medium">
-              Breakout {breakoutLabel}
-            </span>
-          )}
           <button
             onClick={() => handleCopyLink(getInviteLink())}
             className="p-1 rounded hover:bg-white/10 text-gray-400 hover:text-white transition-colors"
@@ -610,7 +583,7 @@ export default function MeetingRoom() {
           </button>
           <span className="flex items-center gap-1 text-xs text-gray-400">
             <Users size={14} />
-            {liveKitRoom ? <ParticipantCount /> : <span>0</span>}
+            <ParticipantCount />
           </span>
           <span className="w-2 h-2 bg-green-500 rounded-full" />
         </div>
@@ -622,24 +595,19 @@ export default function MeetingRoom() {
           {techNotice ? (
             <div className="h-full flex items-center justify-center p-6">
               <div className="max-w-md text-center bg-meeting-surface border border-meeting-border rounded-xl p-8">
-                <AlertTriangle size={32} className="text-yellow-500 mx-auto mb-4" />
                 <h2 className="text-lg font-semibold mb-2">Media unavailable</h2>
                 <p className="text-sm text-gray-400">{techNotice}</p>
               </div>
             </div>
-          ) : liveKitRoom ? (
+          ) : mediaConnected ? (
             <VideoGrid />
           ) : (
             <div className="h-full flex items-center justify-center">
-              <p className="text-sm text-gray-400">Connecting to media server…</p>
+              <p className="text-sm text-gray-400">Connecting to media…</p>
             </div>
           )}
 
-          {activePanel === 'captions' && liveKitRoom && (
-            <CaptionsOverlay room={liveKitRoom} />
-          )}
-
-          {activePanel === 'whiteboard' && liveKitRoom && (
+          {activePanel === 'whiteboard' && mediaConnected && (
             <WhiteboardPanel
               onClose={() => togglePanel('whiteboard')}
               roomId={roomId}
@@ -656,7 +624,7 @@ export default function MeetingRoom() {
                 currentUserName={displayName}
               />
             )}
-            {activePanel === 'participants' && liveKitRoom && (
+            {activePanel === 'participants' && mediaConnected && (
               <ParticipantList
                 onClose={() => togglePanel('participants')}
                 isHost={isHost}
@@ -665,28 +633,21 @@ export default function MeetingRoom() {
                 onDownloadAttendance={handleDownloadAttendance}
               />
             )}
-            {activePanel === 'captions' && liveKitRoom && (
-              <CaptionsPanel
-                room={liveKitRoom}
-                onClose={() => togglePanel('captions')}
-              />
-            )}
             {activePanel === 'breakouts' && (
               <BreakoutPanel
                 onClose={() => togglePanel('breakouts')}
                 roomId={roomId}
                 hostId={mySocketId}
                 isHost={isHost}
-                liveKitRoom={liveKitRoom}
               />
             )}
-            {activePanel === 'polls' && liveKitRoom && (
+            {activePanel === 'polls' && mediaConnected && (
               <PollPanel
                 onClose={() => togglePanel('polls')}
                 roomId={roomId}
               />
             )}
-            {activePanel === 'qa' && liveKitRoom && (
+            {activePanel === 'qa' && mediaConnected && (
               <QnAPanel
                 onClose={() => togglePanel('qa')}
                 roomId={roomId}
@@ -701,20 +662,17 @@ export default function MeetingRoom() {
         isVideoOff={isVideoOff}
         isScreenSharing={isScreenSharing}
         isRecording={isRecording}
-        isRecordingAvailable={isConfigured === true}
         isRoomLocked={isRoomLocked}
         isHost={isHost}
         activePanel={activePanel}
-        mediaConnected={Boolean(liveKitRoom)}
+        mediaConnected={mediaConnected}
         onToggleAudio={handleToggleMute}
         onToggleVideo={handleToggleVideo}
         onFlipCamera={handleFlipCamera}
         onToggleScreenShare={handleScreenShare}
-        onToggleRecording={handleToggleRecording}
         onToggleLock={handleToggleLock}
         onToggleChat={() => togglePanel('chat')}
         onToggleParticipants={() => togglePanel('participants')}
-        onToggleCaptions={() => togglePanel('captions')}
         onToggleBreakouts={() => togglePanel('breakouts')}
         onTogglePolls={() => togglePanel('polls')}
         onToggleQa={() => togglePanel('qa')}
@@ -781,7 +739,6 @@ export default function MeetingRoom() {
           </div>
         </Modal>
       )}
-      </div>
-    </RoomContext.Provider>
+    </div>
   );
 }

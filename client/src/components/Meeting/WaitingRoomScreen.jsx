@@ -3,7 +3,7 @@ import { Clock, LogOut, VideoOff } from 'lucide-react';
 import { getInitials } from '../../utils/constants';
 
 // Held-joiner view (task 14): shown while the host has not admitted us yet.
-// Uses a LOCAL getUserMedia preview only - no LiveKit token is requested while
+// Uses a LOCAL getUserMedia preview only — no media token is requested while
 // waiting, so no media flows before the host lets us in.
 export default function WaitingRoomScreen({ roomId, displayName, onLeave }) {
   const videoRef = useRef(null);

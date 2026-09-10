@@ -1,8 +1,3 @@
-// Breakout Rooms (task 12): host-only manager for the multi-room breakout
-// simulation. Lists {main}:N rooms, creates new ones, moves participants via
-// the host-gated REST api, and tears the whole layout down. Live state
-// arrives through the store (socket 'breakout-updated') with local refreshes
-// after every action so the panel never goes stale.
 import React, { useEffect, useState } from 'react';
 import { X, Plus, Users, CornerUpLeft, DoorOpen } from 'lucide-react';
 import useStore from '../../store/useStore';
@@ -17,9 +12,10 @@ import {
   participantBreakoutName
 } from '../../utils/breakout';
 
-export default function BreakoutPanel({ onClose, roomId, hostId, isHost, liveKitRoom }) {
+export default function BreakoutPanel({ onClose, roomId, hostId, isHost }) {
   const breakoutState = useStore((s) => s.breakoutState);
   const participants = useStore((s) => s.participants);
+  const mySocketId = useStore((s) => s.mySocketId);
 
   const [layout, setLayout] = useState(breakoutState);
   const [nameInput, setNameInput] = useState('');
@@ -39,8 +35,8 @@ export default function BreakoutPanel({ onClose, roomId, hostId, isHost, liveKit
   };
 
   useEffect(() => {
-    refresh();
-  }, [roomId, hostId]);
+    if (isHost) refresh();
+  }, [roomId, hostId, isHost]);
 
   useEffect(() => {
     if (breakoutState) setLayout(breakoutState);
@@ -82,7 +78,32 @@ export default function BreakoutPanel({ onClose, roomId, hostId, isHost, liveKit
 
   const breakoutOptions = layout?.breakouts ?? [];
   const participantOptions = Array.from(participants.values());
-  const currentLabel = breakoutRoomLabel(liveKitRoom?.name, roomId);
+  const myBreakoutLabel = breakoutRoomLabel(layout?.assignments, mySocketId);
+
+  if (!isHost) {
+    return (
+      <div className="panel h-full">
+        <div className="px-4 py-3 border-b border-meeting-border flex items-center justify-between">
+          <h3 className="font-semibold text-sm">Breakout Rooms</h3>
+          <button onClick={onClose} className="icon-btn text-gray-400 hover:text-white" aria-label="Close breakout rooms">
+            <X size={18} />
+          </button>
+        </div>
+        <div className="flex-1 overflow-y-auto p-4 space-y-4">
+          {myBreakoutLabel ? (
+            <div className="bg-meeting-card rounded-xl p-4 border border-meeting-border text-center">
+              <p className="text-sm text-gray-200 mb-1">You are in breakout: <span className="font-medium text-primary">{myBreakoutLabel}</span></p>
+              <p className="text-xs text-gray-500">Wait here until the host ends the breakout session.</p>
+            </div>
+          ) : (
+            <div className="bg-meeting-card rounded-xl p-4 border border-meeting-border text-center">
+              <p className="text-sm text-gray-200">You are in the main room.</p>
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="panel h-full">
@@ -210,7 +231,7 @@ export default function BreakoutPanel({ onClose, roomId, hostId, isHost, liveKit
 
       <div className="px-4 py-3 border-t border-meeting-border space-y-3">
         <p className="text-xs text-gray-500">
-          You are in {currentLabel ? `Breakout ${currentLabel}` : 'the main room'}.
+          You are in {myBreakoutLabel ? `Breakout ${myBreakoutLabel}` : 'the main room'}.
         </p>
         <button
           onClick={handleTeardown}

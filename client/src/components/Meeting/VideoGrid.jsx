@@ -1,26 +1,23 @@
 import React, { useRef, useState, useEffect, useMemo } from 'react';
-import { useTracks } from '@livekit/components-react';
-import { Track } from 'livekit-client';
 import VideoCard from './VideoCard';
 import { computeLayout, computeGridMode } from '../../utils/gridLayout';
 import useStore from '../../store/useStore';
 
-// VideoGrid is fully LiveKit-native: camera tiles (with placeholder for
-// audio-only participants) plus any active screen-share tiles. No props — all
-// data is read from LiveKit hooks via RoomContext.
 export default function VideoGrid() {
   const containerRef = useRef(null);
   const [size, setSize] = useState({ width: 0, height: 0 });
 
-  // Camera tiles for every participant (placeholder => avatar for audio-only),
-  // plus real screen-share tiles for participants currently sharing.
-  const cameraRefs = useTracks([{ source: Track.Source.Camera, withPlaceholder: true }]);
-  const screenRefs = useTracks([Track.Source.ScreenShare]);
+  const participants = useStore((s) => s.participants);
+  const localStream = useStore((s) => s.localStream);
+  const isMuted = useStore((s) => s.isMuted);
+  const isVideoOff = useStore((s) => s.isVideoOff);
+  const isScreenSharing = useStore((s) => s.isScreenSharing);
+  const screenShareStream = useStore((s) => s.screenShareStream);
+  const reactions = useStore((s) => s.reactions);
+  const displayName = useStore((s) => s.displayName) || localStorage.getItem('webinar-name') || 'Guest';
+  const mySocketId = useStore((s) => s.mySocketId);
+  const isHost = useStore((s) => s.isHost);
 
-  // Ephemeral reaction bursts keyed by participant identity (LiveKit).
-  const reactions = useStore((state) => state.reactions);
-
-  // ResizeObserver to measure the container and fit tiles without scroll.
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
@@ -32,52 +29,103 @@ export default function VideoGrid() {
     return () => observer.disconnect();
   }, []);
 
-  const mode = computeGridMode(screenRefs.length, cameraRefs.length);
+  const remoteEntries = useMemo(() => Array.from(participants.entries()).filter(([id]) => id !== mySocketId), [participants, mySocketId]);
 
-  const screenTiles = useMemo(
-    () => screenRefs.map(ref => ({ ref, isScreenShare: true })),
-    [screenRefs]
-  );
-  const cameraTiles = useMemo(
-    () => cameraRefs.map(ref => ({ ref, isScreenShare: ref.source === Track.Source.ScreenShare })),
-    [cameraRefs]
-  );
-  const allTiles = useMemo(() => [...screenTiles, ...cameraTiles], [screenTiles, cameraTiles]);
+  const hasScreenShare = isScreenSharing && screenShareStream;
+  const remoteWithScreenShare = remoteEntries.filter(([, p]) => p.isScreenSharing && p.stream);
+  const screenSourceCount = hasScreenShare ? 1 : remoteWithScreenShare.length;
+  const cameraCount = 1 + remoteEntries.length;
+  const totalTiles = hasScreenShare ? 1 + cameraCount : (remoteWithScreenShare.length > 0 ? remoteWithScreenShare.length + cameraCount : cameraCount);
 
-  const count = allTiles.length;
+  const mode = computeGridMode(screenSourceCount, cameraCount);
 
-  // Uniform grid layout when nothing is pinned.
-  const layout = useMemo(() => {
-    if (count === 0) return { cols: 1, rows: 1 };
-    if (size.width > 0 && size.height > 0) {
-      return computeLayout(count, size.width, size.height);
-    }
-    const cols = Math.ceil(Math.sqrt(count)) || 1;
-    return { cols, rows: Math.ceil(count / cols) || 1 };
-  }, [count, size.width, size.height]);
-
-  // Screen-share tiles pack into the dominant grid; the camera strip uses the
-  // same equal-tile maths so each strip tile stays proportional.
   const screenLayout = useMemo(() => {
-    const n = screenTiles.length;
+    if (screenSourceCount === 0) return { cols: 1, rows: 1 };
+    if (size.width > 0 && size.height > 0) {
+      return computeLayout(screenSourceCount, size.width, size.height);
+    }
+    const cols = Math.ceil(Math.sqrt(screenSourceCount)) || 1;
+    return { cols, rows: Math.ceil(screenSourceCount / cols) || 1 };
+  }, [screenSourceCount, size.width, size.height]);
+
+  const layout = useMemo(() => {
+    if (totalTiles === 0) return { cols: 1, rows: 1 };
+    if (size.width > 0 && size.height > 0) {
+      return computeLayout(totalTiles, size.width, size.height);
+    }
+    const cols = Math.ceil(Math.sqrt(totalTiles)) || 1;
+    return { cols, rows: Math.ceil(totalTiles / cols) || 1 };
+  }, [totalTiles, size.width, size.height]);
+
+  const cameraStripLayout = useMemo(() => {
+    const n = cameraCount;
     if (n === 0) return { cols: 1, rows: 1 };
     if (size.width > 0 && size.height > 0) {
-      return computeLayout(n, size.width, size.height);
+      return computeLayout(n, size.width, 200);
     }
     const cols = Math.ceil(Math.sqrt(n)) || 1;
     return { cols, rows: Math.ceil(n / cols) || 1 };
-  }, [screenTiles.length, size.width, size.height]);
+  }, [cameraCount, size.width, size.height]);
 
-  const videoCard = (tile, index, isActive) => (
+  const localTile = (
     <VideoCard
-      key={`${tile.ref.participant.identity}-${tile.ref.source}`}
-      trackRef={tile.ref}
-      isActiveSpeaker={isActive}
-      reactions={reactions.get(tile.ref.participant.identity) || []}
+      key="local"
+      participant={{ socketId: mySocketId, displayName, isHost }}
+      stream={localStream}
+      isLocal={true}
+      isMuted={isMuted}
+      isVideoOff={isVideoOff}
+      isScreenSharing={false}
+      reactions={reactions.get(mySocketId) || []}
     />
   );
 
-  if (count === 0) {
+  const remoteCameraTiles = remoteEntries.map(([socketId, p]) => (
+    <VideoCard
+      key={socketId}
+      participant={p}
+      stream={p.stream}
+      isLocal={false}
+      isMuted={p.isMuted}
+      isVideoOff={p.isVideoOff}
+      isScreenSharing={false}
+      reactions={reactions.get(socketId) || []}
+    />
+  ));
+
+  const screenShareTiles = [];
+  if (hasScreenShare) {
+    screenShareTiles.push(
+      <VideoCard
+        key="local-screen"
+        participant={{ socketId: mySocketId, displayName, isHost }}
+        stream={screenShareStream}
+        isLocal={true}
+        isMuted={false}
+        isVideoOff={false}
+        isScreenSharing={true}
+        reactions={[]}
+      />
+    );
+  }
+  remoteWithScreenShare.forEach(([socketId, p]) => {
+    screenShareTiles.push(
+      <VideoCard
+        key={`${socketId}-screen`}
+        participant={p}
+        stream={p.stream}
+        isLocal={false}
+        isMuted={false}
+        isVideoOff={false}
+        isScreenSharing={true}
+        reactions={reactions.get(socketId) || []}
+      />
+    );
+  });
+
+  const allCameraTiles = [localTile, ...remoteCameraTiles];
+
+  if (totalTiles === 0) {
     return (
       <div ref={containerRef} className="h-full w-full p-3 overflow-hidden flex items-center justify-center">
         <p className="text-gray-400 text-sm">Waiting for participants to join…</p>
@@ -88,7 +136,6 @@ export default function VideoGrid() {
   if (mode === 'pinned') {
     return (
       <div ref={containerRef} className="h-full w-full p-3 overflow-hidden flex gap-3">
-        {/* Screen share dominates the layout */}
         <div
           className="flex-1 min-w-0 grid gap-3"
           style={{
@@ -96,13 +143,12 @@ export default function VideoGrid() {
             gridTemplateRows: `repeat(${screenLayout.rows}, minmax(0, 1fr))`,
           }}
         >
-          {screenTiles.map((tile, i) => videoCard(tile, i, i === 0))}
+          {screenShareTiles}
         </div>
 
-        {/* Camera tiles drop to a side strip when a screen is shared */}
-        {cameraTiles.length > 0 && (
+        {allCameraTiles.length > 0 && (
           <div className="w-60 shrink-0 overflow-y-auto grid gap-3 auto-rows-fr">
-            {cameraTiles.map((tile, i) => videoCard(tile, i, false))}
+            {allCameraTiles}
           </div>
         )}
       </div>
@@ -118,7 +164,7 @@ export default function VideoGrid() {
           gridTemplateRows: `repeat(${layout.rows}, minmax(0, 1fr))`,
         }}
       >
-        {allTiles.map((tile, index) => videoCard(tile, index, index === 0))}
+        {allCameraTiles}
       </div>
     </div>
   );

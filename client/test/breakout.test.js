@@ -11,15 +11,17 @@ import {
   teardownBreakouts
 } from '../src/utils/breakout.js';
 
-// --- Pure helpers ---
-
-test('breakoutRoomLabel extracts the label from a {main}:N room', () => {
-  assert.equal(breakoutRoomLabel('abc123:1', 'abc123'), '1');
-  assert.equal(breakoutRoomLabel('abc123:design', 'abc123'), 'design');
-  assert.equal(breakoutRoomLabel('abc123', 'abc123'), null, 'main room has no label');
-  assert.equal(breakoutRoomLabel('other:1', 'abc123'), null, 'unrelated room');
-  assert.equal(breakoutRoomLabel(null, 'abc123'), null);
-  assert.equal(breakoutRoomLabel('abc123:', 'abc123'), null, 'empty label');
+test('breakoutRoomLabel finds the breakout name for a given identity', () => {
+  const assignments = [
+    { identity: 'sock-a', breakoutName: '1' },
+    { identity: 'sock-b', breakoutName: 'design' }
+  ];
+  assert.equal(breakoutRoomLabel(assignments, 'sock-a'), '1');
+  assert.equal(breakoutRoomLabel(assignments, 'sock-b'), 'design');
+  assert.equal(breakoutRoomLabel(assignments, 'sock-c'), null, 'unassigned identity');
+  assert.equal(breakoutRoomLabel(null, 'sock-a'), null, 'null assignments');
+  assert.equal(breakoutRoomLabel(assignments, null), null, 'null identity');
+  assert.equal(breakoutRoomLabel([], 'sock-a'), null, 'empty assignments');
 });
 
 test('nextBreakoutNumber returns the smallest unused positive integer', () => {
@@ -42,9 +44,6 @@ test('participantBreakoutName finds a participant in the assignments', () => {
   assert.equal(participantBreakoutName(assignments, null), null);
 });
 
-// --- REST wrappers (fake fetch; the utils send x-host-id + correct paths) ---
-// API_BASE is '' under node:test (no import.meta.env), so URLs are path-only.
-
 function fakeFetch(routes) {
   return async (url, options = {}) => {
     const route = routes.find((r) => r.url === url && (r.method || 'GET') === (options.method || 'GET'));
@@ -62,7 +61,7 @@ function fakeFetch(routes) {
 test('listBreakouts GETs the room endpoint with x-host-id', async () => {
   const state = {
     roomId: 'r1',
-    breakouts: [{ name: '1', livekitRoom: 'r1:1', identities: ['sock-a'] }],
+    breakouts: [{ name: '1', identities: ['sock-a'] }],
     assignments: [{ identity: 'sock-a', breakoutName: '1' }]
   };
   const callOptions = [];
@@ -83,7 +82,7 @@ test('createBreakout POSTs { name } and surfaces created breakout', async () => 
       url: '/api/rooms/r1/breakouts',
       method: 'POST',
       status: 201,
-      body: { roomId: 'r1', breakout: { name: '2', livekitRoom: 'r1:2' } }
+      body: { roomId: 'r1', breakout: { name: '2' } }
     }
   ]);
   const result = await createBreakout('r1', 'host-1', '2', fetchImpl);
@@ -104,10 +103,10 @@ test('assignBreakout POSTs identity + name', async () => {
   const seen = [];
   const fetchImpl = async (url, options) => {
     seen.push({ url, method: options.method, headers: options.headers, body: JSON.parse(options.body) });
-    return { ok: true, status: 200, json: async () => ({ ok: true, identity: 'sock-a', livekitRoom: 'r1:1' }) };
+    return { ok: true, status: 200, json: async () => ({ ok: true, identity: 'sock-a' }) };
   };
   const result = await assignBreakout('r1', 'host-1', 'sock-a', '1', fetchImpl);
-  assert.equal(result.livekitRoom, 'r1:1');
+  assert.equal(result.ok, true);
   assert.equal(seen[0].method, 'POST');
   assert.equal(seen[0].headers['x-host-id'], 'host-1');
   assert.deepEqual(seen[0].body, { identity: 'sock-a', name: '1' });
@@ -117,7 +116,7 @@ test('returnBreakout POSTs identity', async () => {
   const seen = [];
   const fetchImpl = async (url, options) => {
     seen.push(JSON.parse(options.body));
-    return { ok: true, status: 200, json: async () => ({ ok: true, identity: 'sock-a', livekitRoom: 'r1', alreadyInMain: true }) };
+    return { ok: true, status: 200, json: async () => ({ ok: true, identity: 'sock-a', alreadyInMain: true }) };
   };
   const result = await returnBreakout('r1', 'host-1', 'sock-a', fetchImpl);
   assert.deepEqual(seen, [{ identity: 'sock-a' }]);
@@ -140,13 +139,13 @@ test('REST wrappers throw the server error message + code on failure', async () 
   const fetchImpl = async () => ({
     ok: false,
     status: 503,
-    json: async () => ({ error: 'LiveKit is not configured', code: 'LIVEKIT_NOT_CONFIGURED' })
+    json: async () => ({ error: 'Server unavailable', code: 'SERVER_UNAVAILABLE' })
   });
   await assert.rejects(
     () => createBreakout('r1', 'host-1', '1', fetchImpl),
     (err) => {
-      assert.equal(err.message, 'LiveKit is not configured');
-      assert.equal(err.code, 'LIVEKIT_NOT_CONFIGURED');
+      assert.equal(err.message, 'Server unavailable');
+      assert.equal(err.code, 'SERVER_UNAVAILABLE');
       assert.equal(err.status, 503);
       return true;
     }

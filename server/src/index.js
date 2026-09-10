@@ -16,15 +16,23 @@ const whiteboard = require('./whiteboard');
 const meetings = require('./meetings');
 const invite = require('./invite');
 const auth = require('./auth');
-const livekit = require('./livekit');
-const livekitAdmin = require('./livekitAdmin');
 const db = require('./db');
 
 const app = express();
 const server = http.createServer(app);
+
+// Allowed browser origins (CLIENT_URL may be a comma-separated list).
+// The dev client talks to this server at an absolute origin with
+// credentials: 'include', so CORS must echo the exact origin (a wildcard
+// '*ACC*' is rejected by browsers for credentialed requests).
+const CLIENT_ORIGINS = (process.env.CLIENT_URL || 'http://localhost:5173')
+  .split(',')
+  .map((o) => o.trim())
+  .filter(Boolean);
+
 const io = new Server(server, {
   cors: {
-    origin: '*',
+    origin: CLIENT_ORIGINS,
     methods: ['GET', 'POST'],
     credentials: true
   }
@@ -100,7 +108,13 @@ function requireRoomHost(req, res, roomId) {
   return room;
 }
 
-app.use(cors());
+app.use(cors({
+  origin(origin, callback) {
+    if (!origin || CLIENT_ORIGINS.includes(origin)) return callback(null, true);
+    return callback(new Error(`Origin ${origin} not allowed by CORS`));
+  },
+  credentials: true
+}));
 app.use(express.json());
 app.use(cookieParser());
 
@@ -131,55 +145,6 @@ app.post('/api/auth/logout', (req, res) => {
 
 app.get('/api/auth/me', auth.requireAuth, (req, res) => {
   res.json({ user: req.user });
-});
-
-// --- LiveKit routes ---
-
-// Issue a short-lived join token. `room` and `identity` are required.
-// Host rights (`roomAdmin`) are derived server-side from the room's live
-// participant state - the client-supplied `roomAdmin` param is ignored so a
-// guest can never mint an admin token. A locked room refuses non-host joins.
-app.get('/api/livekit/token', auth.loadUser, async (req, res) => {
-  const room = String(req.query.room || '').trim();
-  const identity = String(req.query.identity || '').trim().slice(0, 100);
-  const name = String(req.query.name || req.user?.name || identity || 'Guest').slice(0, 100);
-  if (!room || !identity) {
-    return res.status(400).json({ error: 'room and identity are required' });
-  }
-  if (!livekit.isConfigured()) {
-    return res.status(403).json({ error: 'LiveKit is not configured', code: 'LIVEKIT_NOT_CONFIGURED' });
-  }
-
-  // roomAdmin comes from the room's participant roster (identity === socket.id
-  // for the socket that joined), never from a client flag.
-  const roomState = getRoom(room);
-  const participant = roomState && roomState.participants.get(identity);
-  const roomAdmin = Boolean(participant && participant.isHost);
-
-  // Server-side room lock: non-host joins are refused while locked.
-  if (livekitAdmin.isRoomLocked(room) && !roomAdmin) {
-    return res.status(403).json({ error: 'Room is locked', code: 'ROOM_LOCKED' });
-  }
-
-  // Waiting-room gate (task 14): a held joiner must not receive a media token
-  // until the host admits them - "not connected to the LiveKit room" enforced
-  // on the server, not just in the UI.
-  if (roomState && roomState.waitingList && roomState.waitingList.has(identity)) {
-    return res.status(403).json({ error: 'Please wait for the host to admit you', code: 'WAITING_ROOM' });
-  }
-
-  // A token grant is normally scoped to the requested room. For the breakout
-  // simulation (task 12) every identity also gets roomCreate:true so the same
-  // token authorizes the destination '{main}:N' room when the host moves a
-  // participant (moveParticipant relocates the existing connection - there is
-  // no re-join with a fresh token). roomAdmin is still derived server-side.
-  const { token, serverUrl } = await livekit.createJoinToken({ room, identity, name, roomAdmin, roomCreate: true });
-  res.json({ token, serverUrl, identity, name, roomAdmin });
-});
-
-// Health endpoint: surface whether LiveKit is configured (for the client UI).
-app.get('/api/livekit/status', (req, res) => {
-  res.json({ configured: livekit.isConfigured() });
 });
 
 // Health check
@@ -352,33 +317,39 @@ app.get('/api/rooms/:roomId/attendance', (req, res) => {
   res.json({ attendance: getAttendance(req.params.roomId) });
 });
 
-// Recording endpoints (host-gated via x-host-id; the in-app flow uses socket events which check socket.data.isHost)
-app.post('/api/rooms/:roomId/recording/start', async (req, res) => {
+const uploadRouter = express.Router();
+uploadRouter.use(express.json({ limit: '200mb' }));
+uploadRouter.post('/api/rooms/:roomId/recording/upload', (req, res) => {
   const room = requireRoomHost(req, res, req.params.roomId);
   if (!room) return;
-  const result = await recording.startRecording(req.params.roomId);
-  if (result.error) {
-    const status = result.code === 'LIVEKIT_NOT_CONFIGURED' ? 503 : 404;
-    return res.status(status).json(result);
+  const { folder, filename, data, hostId } = req.body || {};
+  if (!folder || typeof folder !== 'string' || !folder.trim()) {
+    return res.status(400).json({ error: 'folder is required' });
   }
-  res.json(result);
-});
-
-app.post('/api/rooms/:roomId/recording/stop', async (req, res) => {
-  const room = requireRoomHost(req, res, req.params.roomId);
-  if (!room) return;
-  const result = await recording.stopRecording(req.params.roomId);
-  if (result.error) {
-    const status = result.code === 'LIVEKIT_NOT_CONFIGURED' ? 503 : 404;
-    return res.status(status).json(result);
+  if (!filename || typeof filename !== 'string' || !/^[A-Za-z0-9._-]+$/.test(filename)) {
+    return res.status(400).json({ error: 'Invalid filename' });
   }
-  res.json(result);
+  if (!data || typeof data !== 'string') {
+    return res.status(400).json({ error: 'data is required' });
+  }
+  if (!hostId || hostId !== room.hostId) {
+    return res.status(403).json({ error: 'Forbidden' });
+  }
+  try {
+    const result = recording.saveRecording({ roomName: room.name, folder: folder.trim(), filename, base64Data: data });
+    res.json(result);
+  } catch (err) {
+    const status = ['FOLDER_REQUIRED', 'INVALID_FILENAME', 'DATA_REQUIRED'].includes(err.code) ? 400 : 500;
+    res.status(status).json({ error: err.message });
+  }
 });
+app.use(uploadRouter);
 
 app.get('/api/rooms/:roomId/recording/status', (req, res) => {
-  const result = recording.getRecordingStatus(req.params.roomId);
-  if (result.error) return res.status(404).json(result);
-  res.json(result);
+  const room = getRoom(req.params.roomId);
+  if (!room) return res.status(404).json({ error: 'Room not found' });
+  const rows = db.prepare('SELECT * FROM recordings WHERE room_name = ? ORDER BY id DESC').all(room.name);
+  res.json({ recordings: rows });
 });
 
 // --- Breakout room endpoints (host-gated via x-host-id; task 12) ---
@@ -406,8 +377,7 @@ app.post('/api/rooms/:roomId/breakouts', async (req, res) => {
     req.headers['x-host-id']
   );
   if (result.error) {
-    const status = result.code === 'LIVEKIT_NOT_CONFIGURED' ? 503
-      : result.code === 'DUPLICATE_BREAKOUT' ? 409 : 400;
+    const status = result.code === 'DUPLICATE_BREAKOUT' ? 409 : 400;
     return res.status(status).json(result);
   }
   broadcastBreakouts(req.params.roomId);
@@ -420,8 +390,7 @@ app.post('/api/rooms/:roomId/breakouts/assign', async (req, res) => {
   const { identity, name } = req.body || {};
   const result = await breakout.assignParticipant(req.params.roomId, identity, name);
   if (result.error) {
-    const status = result.code === 'LIVEKIT_NOT_CONFIGURED' ? 503
-      : result.code === 'BREAKOUT_NOT_FOUND' ? 404
+    const status = result.code === 'BREAKOUT_NOT_FOUND' ? 404
       : result.code === 'PARTICIPANT_NOT_FOUND' ? 404 : 400;
     return res.status(status).json(result);
   }
@@ -435,8 +404,7 @@ app.post('/api/rooms/:roomId/breakouts/return', async (req, res) => {
   const { identity } = req.body || {};
   const result = await breakout.returnParticipant(req.params.roomId, identity);
   if (result.error) {
-    const status = result.code === 'LIVEKIT_NOT_CONFIGURED' ? 503 : 400;
-    return res.status(status).json(result);
+    return res.status(400).json(result);
   }
   broadcastBreakouts(req.params.roomId);
   res.json(result);
@@ -447,8 +415,7 @@ app.post('/api/rooms/:roomId/breakouts/teardown', async (req, res) => {
   if (!room) return;
   const result = await breakout.teardownBreakouts(req.params.roomId);
   if (result.error) {
-    const status = result.code === 'LIVEKIT_NOT_CONFIGURED' ? 503 : 400;
-    return res.status(status).json(result);
+    return res.status(400).json(result);
   }
   broadcastBreakouts(req.params.roomId);
   res.json(result);
@@ -462,13 +429,13 @@ app.get('/api/rooms/:roomId/chat', (req, res) => {
 });
 
 // --- Polls & Q&A endpoints (task 15) ---
-// Live traffic rides the LiveKit 'poll'/'qa' data channels; these routes keep
+// Live traffic rides the 'poll'/'qa' data channels; these routes keep
 // the durable record (SQLite) so results survive a refresh and the host can
 // download them. Poll creation and "mark answered" are host-gated; votes and
 // questions require the caller to be a current roster participant.
 
 // REST gate: participant actions must come from a socket currently in the room
-// roster (identity === socket.id, same contract as the LiveKit join token).
+// roster (identity === socket.id, same contract as the socket relay).
 function requireRoomParticipant(req, res, roomId) {
   const room = getRoom(roomId);
   if (!room) {
@@ -811,10 +778,6 @@ io.on('connection', (socket) => {
       io.to(targetId).emit('force-mute');
       socket.emit('participant-muted', { socketId: targetId, displayName: target.displayName });
     }
-
-    // Mirror the mute on the SFU so the participant's published audio track is
-    // silenced server-side (no-op when LiveKit keys are absent).
-    livekitAdmin.muteParticipant(room.id, targetId);
   });
 
   // Kick a participant (host only)
@@ -834,9 +797,6 @@ io.on('connection', (socket) => {
         }
       }, 500);
     }
-
-    // Sever the SFU session too (no-op when LiveKit keys are absent).
-    livekitAdmin.removeParticipant(room.id, targetId);
   });
 
   // Toggle waiting room (host only)
@@ -849,7 +809,7 @@ io.on('connection', (socket) => {
 
   // Admit a waiting joiner (host only): promotes them to a participant, puts
   // their socket in the room, and hands them the standard room-joined payload
-  // so the client's normal admission path runs (store sync + LiveKit connect).
+  // so the client's normal admission path runs (store sync + media connect).
   socket.on('admit-waiting', ({ targetId } = {}, ack) => {
     const room = getRoom(socket.data.roomId);
     if (!room || !socket.data.isHost) {
@@ -938,13 +898,9 @@ io.on('connection', (socket) => {
   socket.on('lock-room', ({ isLocked }, ack) => {
     const room = getRoom(socket.data.roomId);
     if (!room || !socket.data.isHost) return;
-    const result = livekitAdmin.setRoomLocked(room.id, Boolean(isLocked));
-    if (result.ok) {
-      io.to(room.id).emit('room-locked', { isLocked: result.settings.isLocked });
-      ack?.({ success: true, roomId: room.id, isLocked: result.settings.isLocked });
-    } else {
-      ack?.({ success: false, error: result.error });
-    }
+    const settings = updateRoomSettings(room.id, { isLocked: Boolean(isLocked) });
+    io.to(room.id).emit('room-locked', { isLocked: settings.isLocked });
+    ack?.({ success: true, roomId: room.id, isLocked: settings.isLocked });
   });
 
   // --- WebRTC signaling ---
@@ -954,39 +910,18 @@ io.on('connection', (socket) => {
   handleChat(io, socket);
 
   // --- Recording controls (host only) ---
-  socket.on('start-recording', async () => {
-    if (!socket.data.isHost) return;
-    const result = await startRecordingSocket(socket.data.roomId);
-    if (result.error) {
-      socket.emit('error-message', { message: result.error });
-    }
+  socket.on('start-recording', () => {
+    const room = getRoom(socket.data.roomId);
+    if (!room || !socket.data.isHost) return;
+    io.to(room.id).emit('recording-started');
   });
 
-  socket.on('stop-recording', async () => {
-    if (!socket.data.isHost) return;
-    const result = await stopRecordingSocket(socket.data.roomId);
-    if (result.error) {
-      socket.emit('error-message', { message: result.error });
-    }
+  socket.on('stop-recording', () => {
+    const room = getRoom(socket.data.roomId);
+    if (!room || !socket.data.isHost) return;
+    io.to(room.id).emit('recording-stopped');
   });
 });
-
-// Start recording via socket - delegates to recording module and notifies room
-async function startRecordingSocket(roomId) {
-  const result = await recording.startRecording(roomId);
-  if (!result.error) {
-    io.to(roomId).emit('recording-started');
-  }
-  return result;
-}
-
-async function stopRecordingSocket(roomId) {
-  const result = await recording.stopRecording(roomId);
-  if (!result.error) {
-    io.to(roomId).emit('recording-stopped');
-  }
-  return result;
-}
 
 // JSON 404 for unknown API routes + final error handler (never leak HTML/stack traces)
 app.use('/api', (req, res) => {

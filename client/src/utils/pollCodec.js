@@ -1,4 +1,4 @@
-// LiveKit data-channel poll & Q&A serialization. Pure ESM over globals
+// Poll & Q&A message serialization. Pure ESM over globals
 // (JSON / TextEncoder / TextDecoder / Date) so node:test can import it
 // directly, mirroring chatCodec/reactionCodec.
 //
@@ -11,8 +11,7 @@
 //   vote:     {questionId, voterId, delta}   delta: +1 upvote / -1 downvote / 0 neutral
 //   answered: {questionId, isAnswered}
 //
-// Store appliers are idempotent (voter-choice replace, dedupe by ids), so
-// LiveKit echo/no-echo behavior is irrelevant for correctness.
+// Store appliers are idempotent (voter-choice replace, dedupe by ids).
 
 export const POLL_MIN_OPTIONS = 2;
 export const POLL_MAX_OPTIONS = 8;

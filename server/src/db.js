@@ -64,7 +64,6 @@ function initSchema(database) {
     CREATE TABLE IF NOT EXISTS recordings (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       room_name TEXT NOT NULL,
-      egress_id TEXT,
       url TEXT,
       status TEXT NOT NULL,
       started_at INTEGER,
@@ -118,13 +117,11 @@ function initSchema(database) {
       updated_at INTEGER NOT NULL
     );
 
-    -- Breakout room config (multi-room simulation, task 12): each breakout is
-    -- a separate LiveKit room named '{main_room}:{breakout_name}'.
+    -- Breakout room config: each breakout is a labeled group on the main room.
     CREATE TABLE IF NOT EXISTS breakout_rooms (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       main_room TEXT NOT NULL,
       breakout_name TEXT NOT NULL,
-      livekit_room TEXT NOT NULL,
       created_by TEXT,
       created_at INTEGER NOT NULL,
       UNIQUE(main_room, breakout_name)

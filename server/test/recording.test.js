@@ -1,12 +1,16 @@
-// Unit tests for the LiveKit Egress recording module (task 9).
-// Mocks EgressClient so no SFU/network is required; asserts the SDK call
-// shape (room name + encoded file output + H.264 1080p preset) and the
-// LIVEKIT_NOT_CONFIGURED graceful-degrade path when env keys are absent.
+// Unit + integration tests for the local-disk recording upload endpoint.
+// saveRecording writes a base64 webm blob to a host folder and persists a
+// recordings row; the self-harnessed REST test asserts host-gating, the file
+// landing on disk, and the status lookup.
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
+const { spawn } = require('child_process');
+const path = require('path');
+const os = require('os');
+const fs = require('fs');
+const { io } = require('socket.io-client');
 
 const { createDatabase } = require('../src/db');
-const { EgressClient, EncodedFileOutput, EncodingOptionsPreset } = require('livekit-server-sdk');
 const rooms = require('../src/rooms');
 const recording = require('../src/recording');
 
@@ -14,136 +18,170 @@ function newDb() {
   return createDatabase(':memory:');
 }
 
-/** Set fake LiveKit env keys for the duration of a test. */
-function withLiveKitEnv(t) {
-  process.env.LIVEKIT_URL = 'ws://127.0.0.1:7880';
-  process.env.LIVEKIT_API_KEY = 'test-key';
-  process.env.LIVEKIT_API_SECRET = 'test-secret';
-  t.after(() => {
-    delete process.env.LIVEKIT_URL;
-    delete process.env.LIVEKIT_API_KEY;
-    delete process.env.LIVEKIT_API_SECRET;
+function makeRoom(roomId, db) {
+  return rooms.createRoom(roomId, 'Host', 'sock-1', null, 'Record Room', db);
+}
+
+test('saveRecording writes the file, inserts a completed row, and returns id+path', () => {
+  const db = newDb();
+  const roomId = 'room-save-1';
+  makeRoom(roomId, db);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rec-test-'));
+  const filename = 'test.webm';
+
+  try {
+    const result = recording.saveRecording({
+      roomName: 'Record Room',
+      folder: dir,
+      filename,
+      base64Data: Buffer.from('fake-webm').toString('base64')
+    }, db);
+
+    assert.ok(result.id > 0, 'id returned');
+    assert.equal(result.path, path.join(dir, filename));
+    assert.equal(fs.existsSync(result.path), true, 'file exists on disk');
+    assert.deepEqual(fs.readFileSync(result.path), Buffer.from('fake-webm'), 'bytes round-trip');
+
+    const row = db.prepare('SELECT * FROM recordings WHERE room_name = ?').get('Record Room');
+    assert.ok(row, 'recording row inserted');
+    assert.equal(row.status, 'completed');
+    assert.equal(row.url, result.path);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+    db.close();
+  }
+});
+
+test('saveRecording creates nested folders recursively', () => {
+  const db = newDb();
+  makeRoom('room-nested-1', db);
+  const dir = path.join(os.tmpdir(), `rec-nested-${Date.now()}`, 'sub', 'dir');
+
+  try {
+    const result = recording.saveRecording({
+      roomName: 'Record Room',
+      folder: dir,
+      filename: 'clip.webm',
+      base64Data: Buffer.from('blob').toString('base64')
+    }, db);
+    assert.equal(fs.existsSync(result.path), true, 'nested file exists');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+    db.close();
+  }
+});
+
+test('saveRecording rejects an invalid filename', () => {
+  const db = newDb();
+  makeRoom('room-badname-1', db);
+  assert.throws(() => recording.saveRecording({
+    roomName: 'Record Room',
+    folder: os.tmpdir(),
+    filename: '../../evil.webm',
+    base64Data: 'x'
+  }, db), /Invalid filename/);
+  db.close();
+});
+
+// --- Self-harnessed REST upload flow ---
+
+const TEST_PORT = 3020;
+const SERVER_URL = `http://localhost:${TEST_PORT}`;
+const serverDir = path.join(__dirname, '..');
+
+async function waitForServer(proc, timeoutMs = 15000) {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    try {
+      const res = await fetch(`${SERVER_URL}/api/health`);
+      if (res.ok) return;
+    } catch {
+      /* not up yet */
+    }
+    if (proc.exitCode !== null) throw new Error('Server exited before becoming ready');
+    await new Promise((r) => setTimeout(r, 300));
+  }
+  throw new Error('Server did not become ready in time');
+}
+
+function connectClient() {
+  const client = io(SERVER_URL, { transports: ['websocket'] });
+  return new Promise((resolve, reject) => {
+    client.on('connect', () => resolve(client));
+    client.on('connect_error', reject);
   });
 }
 
-/** Create a room in the shared in-memory registry + test db. */
-function makeRoom(roomId, db) {
-  return rooms.createRoom(roomId, 'Host', 'sock-1', null, null, db);
+function emitAck(client, event, payload) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`ack timeout: ${event}`)), 5000);
+    client.emit(event, payload, (res) => {
+      clearTimeout(timer);
+      resolve(res);
+    });
+  });
 }
 
-test('start recording without LiveKit keys returns LIVEKIT_NOT_CONFIGURED', async () => {
-  delete process.env.LIVEKIT_URL;
-  delete process.env.LIVEKIT_API_KEY;
-  delete process.env.LIVEKIT_API_SECRET;
+test('upload endpoint stores the file and status returns the row; non-host is 403', async (t) => {
+  const proc = spawn(process.execPath, ['src/index.js'], {
+    cwd: serverDir,
+    stdio: 'ignore',
+    env: { ...process.env, PORT: String(TEST_PORT) }
+  });
 
-  const db = newDb();
-  const roomId = 'room-unconfig-1';
-  makeRoom(roomId, db);
+  t.after(() => {
+    proc.kill();
+  });
 
-  const result = await recording.startRecording(roomId, db);
+  await waitForServer(proc);
 
-  assert.equal(result.error, 'LiveKit is not configured');
-  assert.equal(result.code, 'LIVEKIT_NOT_CONFIGURED');
-  assert.equal(result.isRecording, false);
-  assert.equal(rooms.getRoom(roomId).isRecording, false);
-  db.close();
-});
+  const host = await connectClient();
+  const guest = await connectClient();
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rec-upload-'));
+  const filename = 'test.webm';
 
-test('startRecording creates room-composite egress with encoded output and 1080p preset', async (t) => {
-  const db = newDb();
-  const roomId = 'room-egress-1';
-  makeRoom(roomId, db);
-  withLiveKitEnv(t);
+  try {
+    const created = await emitAck(host, 'create-room', { displayName: 'Host A', roomName: 'Rec Upload' });
+    assert.equal(created.success, true, 'room created');
+    const roomId = created.roomId;
 
-  const startMock = t.mock.method(EgressClient.prototype, 'startRoomCompositeEgress', async () => ({ egressId: 'EG_AB12' }));
+    await emitAck(guest, 'join-room', { roomId, displayName: 'Guest B' });
 
-  const result = await recording.startRecording(roomId, db);
+    const body = {
+      folder: dir,
+      filename,
+      data: Buffer.from('fake-webm').toString('base64'),
+      hostId: host.id
+    };
 
-  assert.equal(startMock.mock.callCount(), 1);
-  const [calledRoom, output, options] = startMock.mock.calls[0].arguments;
-  assert.equal(calledRoom, roomId);
-  assert.ok(output instanceof EncodedFileOutput, 'output is EncodedFileOutput');
-  assert.ok(output.filepath.startsWith(`recordings/${roomId}/`), 'filepath under recordings/<roomId>/');
-  assert.ok(output.filepath.endsWith('.mp4'), 'filepath ends with .mp4');
-  assert.equal(options.layout, 'grid');
-  assert.equal(options.encodingOptions, EncodingOptionsPreset.H264_1080P_30);
+    const guestRes = await fetch(`${SERVER_URL}/api/rooms/${roomId}/recording/upload`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-host-id': guest.id },
+      body: JSON.stringify(body)
+    });
+    assert.equal(guestRes.status, 403, 'non-host upload is forbidden');
 
-  assert.equal(result.isRecording, true);
-  assert.equal(result.egressId, 'EG_AB12');
+    const res = await fetch(`${SERVER_URL}/api/rooms/${roomId}/recording/upload`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-host-id': host.id },
+      body: JSON.stringify(body)
+    });
+    assert.equal(res.status, 200, 'host upload succeeds');
+    const result = await res.json();
+    assert.ok(result.id > 0, 'response carries an id');
+    assert.equal(result.path, path.join(dir, filename), 'response carries the absolute path');
+    assert.equal(fs.existsSync(result.path), true, 'file exists on disk after upload');
 
-  const row = db.prepare('SELECT * FROM recordings WHERE room_name = ?').get(roomId);
-  assert.ok(row, 'recording row inserted');
-  assert.equal(row.status, 'active');
-  assert.equal(row.egress_id, 'EG_AB12');
-  db.close();
-});
-
-test('getRecordingStatus surfaces persisted egress id and url', async (t) => {
-  const db = newDb();
-  const roomId = 'room-status-1';
-  makeRoom(roomId, db);
-  withLiveKitEnv(t);
-
-  t.mock.method(EgressClient.prototype, 'startRoomCompositeEgress', async () => ({ egressId: 'EG_ST01' }));
-  await recording.startRecording(roomId, db);
-
-  const status = recording.getRecordingStatus(roomId, db);
-
-  assert.equal(status.isRecording, true);
-  assert.equal(status.egressId, 'EG_ST01');
-  assert.ok(status.url.startsWith(`recordings/${roomId}/`), 'url path persisted');
-  assert.equal(status.status, 'active');
-  db.close();
-});
-
-test('stopRecording calls stopEgress with stored id and marks row stopped', async (t) => {
-  const db = newDb();
-  const roomId = 'room-stop-1';
-  makeRoom(roomId, db);
-  withLiveKitEnv(t);
-
-  t.mock.method(EgressClient.prototype, 'startRoomCompositeEgress', async () => ({ egressId: 'EG_STOP1' }));
-  await recording.startRecording(roomId, db);
-
-  const stopMock = t.mock.method(EgressClient.prototype, 'stopEgress', async () => ({}));
-
-  const result = await recording.stopRecording(roomId, db);
-
-  assert.equal(stopMock.mock.callCount(), 1);
-  assert.equal(stopMock.mock.calls[0].arguments[0], 'EG_STOP1');
-  assert.equal(result.isRecording, false);
-  assert.ok(result.durationMs >= 0, 'duration computed');
-
-  const row = db.prepare('SELECT * FROM recordings WHERE room_name = ?').get(roomId);
-  assert.equal(row.status, 'stopped');
-  db.close();
-});
-
-test('starting twice is rejected as Already recording', async (t) => {
-  const db = newDb();
-  const roomId = 'room-double-1';
-  makeRoom(roomId, db);
-  withLiveKitEnv(t);
-
-  t.mock.method(EgressClient.prototype, 'startRoomCompositeEgress', async () => ({ egressId: 'EG_DBL1' }));
-  await recording.startRecording(roomId, db);
-
-  const second = await recording.startRecording(roomId, db);
-  assert.equal(second.error, 'Already recording');
-  assert.equal(second.isRecording, true);
-  db.close();
-});
-
-test('stop on a non-recording room returns error', async () => {
-  delete process.env.LIVEKIT_URL;
-  delete process.env.LIVEKIT_API_KEY;
-  delete process.env.LIVEKIT_API_SECRET;
-
-  const db = newDb();
-  const roomId = 'room-norec-1';
-  makeRoom(roomId, db);
-
-  const result = await recording.stopRecording(roomId, db);
-  assert.equal(result.error, 'Not recording');
-  db.close();
+    const statusRes = await fetch(`${SERVER_URL}/api/rooms/${roomId}/recording/status`);
+    assert.equal(statusRes.status, 200, 'status lookup succeeds');
+    const status = await statusRes.json();
+    assert.equal(status.recordings.length >= 1, true, 'status returns uploaded rows');
+    const statusRow = status.recordings.find((r) => r.url === result.path);
+    assert.ok(statusRow, 'status contains the freshly uploaded row');
+    assert.equal(statusRow.status, 'completed');
+  } finally {
+    host.disconnect();
+    guest.disconnect();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });

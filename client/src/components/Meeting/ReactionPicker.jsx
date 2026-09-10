@@ -1,21 +1,16 @@
 import React, { useCallback, useState } from 'react';
-import { useDataChannel } from '@livekit/components-react';
 import { Smile, X } from 'lucide-react';
 import useStore from '../../store/useStore';
 import { buildReaction, decodeReaction, encodeReaction } from '../../utils/reactionCodec';
+import useCollabChannel from '../../hooks/useCollabChannel';
 
 const EMOJI_OPTIONS = ['👍', '❤️', '😂', '😮', '😢', '🙌', '🎉', '🔥'];
 
-// Emoji reactions over the 'reactions' data-channel topic. Mounted only while
-// a LiveKit room exists (MeetingControls gates on mediaConnected), so
-// RoomContext is always non-null here. Reactions are ephemeral: sent via the
-// data channel, rendered as a brief burst on the sender's tile via the store,
-// never persisted.
 export default function ReactionPicker() {
   const [open, setOpen] = useState(false);
   const store = useStore;
-  const { send } = useDataChannel('reactions', (msg) => {
-    const reaction = decodeReaction(msg.payload);
+  const { send } = useCollabChannel('reactions', (payload) => {
+    const reaction = decodeReaction(payload);
     if (reaction) store.getState().addReaction(reaction);
   });
 
@@ -25,12 +20,8 @@ export default function ReactionPicker() {
 
   const sendReaction = useCallback((emoji) => {
     const reaction = buildReaction({ emoji, sender: displayName, senderId: mySocketId });
-    // Local echo so the sender sees the burst even without a wire round-trip;
-    // addReaction dedupes by id against the data-channel echo.
     store.getState().addReaction(reaction);
-    send(encodeReaction(reaction), { reliable: false }).catch((err) => {
-      console.warn('[Reactions] send failed:', err);
-    });
+    send(encodeReaction(reaction));
     setOpen(false);
   }, [displayName, mySocketId, send, store]);
 

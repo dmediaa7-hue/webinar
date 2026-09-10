@@ -1,7 +1,7 @@
 // Polls & Q&A persistence layer (task 15).
 // CRUD over the `polls`, `poll_votes` and `qa_questions` tables (schema in
 // db.js). Functions accept an optional `db` handle so unit tests can use
-// ':memory:'. Live traffic rides the LiveKit 'poll'/'qa' data channels; these
+// ':memory:'. Live traffic rides the 'poll'/'qa' data channels; these
 // stores keep the durable record so results survive refresh and the host can
 // download them.
 const { v4: uuidv4 } = require('uuid');

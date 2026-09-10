@@ -1,10 +1,9 @@
-// Unit tests for the breakout rooms module (task 12).
-// Mocks RoomServiceClient so no SFU/network is required; asserts the SDK call
-// shapes: createRoom provisions '{main}:N', moveParticipant relocates to the
-// correct destination room, deleteRoom tears down on end, and the
-// LIVEKIT_NOT_CONFIGURED graceful-degrade path when env keys are absent.
-// The final test self-harnesses src/index.js (like host-controls.test.js) to
-// verify the host-only REST gate returns 403 for a non-host caller.
+// Unit tests for the breakout GROUPS module. In pure P2P there are no separate
+// media rooms, so breakouts are host-managed labeled groups on the main room:
+// createBreakout/assign/return/teardown persist SQLite rows only. The final
+// test self-harnesses src/index.js (like host-controls.test.js) to verify the
+// host-only REST gate returns 403 for a non-host caller and that host actions
+// succeed with non-503 responses.
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { spawn } = require('child_process');
@@ -12,24 +11,11 @@ const path = require('path');
 const { io } = require('socket.io-client');
 
 const { createDatabase } = require('../src/db');
-const { RoomServiceClient } = require('livekit-server-sdk');
 const rooms = require('../src/rooms');
 const breakout = require('../src/breakout');
 
 function newDb() {
   return createDatabase(':memory:');
-}
-
-/** Set fake LiveKit env keys for the duration of a test. */
-function withLiveKitEnv(t) {
-  process.env.LIVEKIT_URL = 'ws://127.0.0.1:7880';
-  process.env.LIVEKIT_API_KEY = 'test-key';
-  process.env.LIVEKIT_API_SECRET = 'test-secret';
-  t.after(() => {
-    delete process.env.LIVEKIT_URL;
-    delete process.env.LIVEKIT_API_KEY;
-    delete process.env.LIVEKIT_API_SECRET;
-  });
 }
 
 /** Create a room with a host + optional guest participant in the registry. */
@@ -43,11 +29,6 @@ function makeRoom(roomId, db, withGuest = false) {
 
 // --- Pure helpers ---
 
-test('breakoutRoomName joins main room and label with a colon', () => {
-  assert.equal(breakout.breakoutRoomName('abc123', '1'), 'abc123:1');
-  assert.equal(breakout.breakoutRoomName('abc123', 'design'), 'abc123:design');
-});
-
 test('cleanBreakoutName trims, caps length, and rejects invalid characters', () => {
   assert.equal(breakout.cleanBreakoutName('  1  '), '1');
   assert.equal(breakout.cleanBreakoutName('design-a'), 'design-a');
@@ -57,13 +38,10 @@ test('cleanBreakoutName trims, caps length, and rejects invalid characters', () 
   assert.equal(breakout.cleanBreakoutName(null), null);
 });
 
-test('nextBreakoutName auto-numbers past existing breakouts', async (t) => {
+test('nextBreakoutName auto-numbers past existing breakouts', async () => {
   const db = newDb();
   const roomId = 'room-next-1';
   makeRoom(roomId, db);
-  withLiveKitEnv(t);
-  t.mock.method(RoomServiceClient.prototype, 'createRoom', async (options) => ({ name: options.name }));
-  t.mock.method(RoomServiceClient.prototype, 'moveParticipant', async () => ({}));
 
   assert.equal(breakout.nextBreakoutName(roomId, [], db), '1');
   await breakout.createBreakout(roomId, '1', 'sock-host', db);
@@ -73,77 +51,30 @@ test('nextBreakoutName auto-numbers past existing breakouts', async (t) => {
   db.close();
 });
 
-// --- Graceful degrade without LiveKit keys ---
+// --- Creation ---
 
-test('createBreakout without LiveKit keys returns LIVEKIT_NOT_CONFIGURED', async () => {
-  delete process.env.LIVEKIT_URL;
-  delete process.env.LIVEKIT_API_KEY;
-  delete process.env.LIVEKIT_API_SECRET;
-
+test('createBreakout persists a group row and returns the breakout', async () => {
   const db = newDb();
-  const roomId = 'room-unconf-1';
+  const roomId = 'room-prov-1';
   makeRoom(roomId, db);
 
   const result = await breakout.createBreakout(roomId, '1', 'sock-host', db);
-  assert.equal(result.error, 'LiveKit is not configured');
-  assert.equal(result.code, 'LIVEKIT_NOT_CONFIGURED');
-  db.close();
-});
-
-test('assignParticipant without LiveKit keys returns LIVEKIT_NOT_CONFIGURED', async (t) => {
-  delete process.env.LIVEKIT_URL;
-  delete process.env.LIVEKIT_API_KEY;
-  delete process.env.LIVEKIT_API_SECRET;
-
-  const db = newDb();
-  const roomId = 'room-unconf-2';
-  makeRoom(roomId, db, true);
-
-  // Need a breakout row without provisioning - insert directly like the module would.
-  db.prepare(`
-    INSERT INTO breakout_rooms (main_room, breakout_name, livekit_room, created_by, created_at)
-    VALUES (?, ?, ?, ?, ?)
-  `).run(roomId, '1', `${roomId}:1`, 'sock-host', Date.now());
-
-  const result = await breakout.assignParticipant(roomId, 'sock-guest', '1', db);
-  assert.equal(result.error, 'LiveKit is not configured');
-  assert.equal(result.code, 'LIVEKIT_NOT_CONFIGURED');
-  db.close();
-});
-
-// --- Provisioning via createRoom ---
-
-test('createBreakout provisions a {main}:N LiveKit room and persists it', async (t) => {
-  const db = newDb();
-  const roomId = 'room-provision-1';
-  makeRoom(roomId, db);
-  withLiveKitEnv(t);
-
-  const createRoomMock = t.mock.method(RoomServiceClient.prototype, 'createRoom', async (options) => ({ name: options.name }));
-
-  const result = await breakout.createBreakout(roomId, '1', 'sock-host', db);
-
-  assert.equal(createRoomMock.mock.callCount(), 1);
-  const [callOpts] = createRoomMock.mock.calls[0].arguments;
-  assert.deepEqual(callOpts, { name: `${roomId}:1` }, 'provisions exactly {main}:N');
 
   assert.equal(result.roomId, roomId);
   assert.equal(result.breakout.name, '1');
-  assert.equal(result.breakout.livekitRoom, `${roomId}:1`);
+  assert.equal(result.breakout.createdBy, 'sock-host');
+  assert.ok(result.breakout.createdAt > 0, 'createdAt persisted');
 
   const row = db.prepare('SELECT * FROM breakout_rooms WHERE main_room = ? AND breakout_name = ?').get(roomId, '1');
   assert.ok(row, 'breakout row inserted');
-  assert.equal(row.livekit_room, `${roomId}:1`);
   assert.equal(row.created_by, 'sock-host');
   db.close();
 });
 
-test('duplicate breakout name is rejected with DUPLICATE_BREAKOUT', async (t) => {
+test('duplicate breakout name is rejected with DUPLICATE_BREAKOUT', async () => {
   const db = newDb();
   const roomId = 'room-dup-1';
   makeRoom(roomId, db);
-  withLiveKitEnv(t);
-  t.mock.method(RoomServiceClient.prototype, 'createRoom', async (options) => ({ name: options.name }));
 
   await breakout.createBreakout(roomId, '1', 'sock-host', db);
   const second = await breakout.createBreakout(roomId, '1', 'sock-host', db);
@@ -153,12 +84,10 @@ test('duplicate breakout name is rejected with DUPLICATE_BREAKOUT', async (t) =>
   db.close();
 });
 
-test('unnamed createBreakout auto-numbers to the next free label', async (t) => {
+test('unnamed createBreakout auto-numbers to the next free label', async () => {
   const db = newDb();
   const roomId = 'room-auto-1';
   makeRoom(roomId, db);
-  withLiveKitEnv(t);
-  t.mock.method(RoomServiceClient.prototype, 'createRoom', async (options) => ({ name: options.name }));
 
   const first = await breakout.createBreakout(roomId, null, 'sock-host', db);
   assert.equal(first.breakout.name, '1');
@@ -168,29 +97,19 @@ test('unnamed createBreakout auto-numbers to the next free label', async (t) => 
   db.close();
 });
 
-// --- Assignment via moveParticipant (acceptance: correct destination) ---
+// --- Assignment (no media-room move) ---
 
-test('assignParticipant calls moveParticipant with {main}:N as destination', async (t) => {
+test('assignParticipant upserts an assignment row', async () => {
   const db = newDb();
   const roomId = 'room-assign-1';
-  makeRoom(roomId, db, true); // host + 'sock-guest'
-  withLiveKitEnv(t);
+  makeRoom(roomId, db, true);
 
-  t.mock.method(RoomServiceClient.prototype, 'createRoom', async (options) => ({ name: options.name }));
   await breakout.createBreakout(roomId, '1', 'sock-host', db);
-
-  const moveMock = t.mock.method(RoomServiceClient.prototype, 'moveParticipant', async () => ({}));
-
   const result = await breakout.assignParticipant(roomId, 'sock-guest', '1', db);
 
-  assert.equal(moveMock.mock.callCount(), 1);
-  const [fromRoom, identity, destinationRoom] = moveMock.mock.calls[0].arguments;
-  assert.equal(fromRoom, roomId, 'moves from the main room');
-  assert.equal(identity, 'sock-guest');
-  assert.equal(destinationRoom, `${roomId}:1`, 'destination is {main}:N');
-
   assert.equal(result.ok, true);
-  assert.equal(result.livekitRoom, `${roomId}:1`);
+  assert.equal(result.identity, 'sock-guest');
+  assert.equal(result.roomId, roomId);
 
   const assignment = db.prepare(
     'SELECT * FROM breakout_assignments WHERE main_room = ? AND participant_identity = ?'
@@ -200,48 +119,38 @@ test('assignParticipant calls moveParticipant with {main}:N as destination', asy
   db.close();
 });
 
-test('re-assigning a participant moves them from their current breakout', async (t) => {
+test('re-assigning a participant moves their row to the new group', async () => {
   const db = newDb();
   const roomId = 'room-reassign-1';
   makeRoom(roomId, db, true);
-  withLiveKitEnv(t);
-  t.mock.method(RoomServiceClient.prototype, 'createRoom', async (options) => ({ name: options.name }));
-  const moveMock = t.mock.method(RoomServiceClient.prototype, 'moveParticipant', async () => ({}));
   await breakout.createBreakout(roomId, '1', 'sock-host', db);
   await breakout.createBreakout(roomId, '2', 'sock-host', db);
   await breakout.assignParticipant(roomId, 'sock-guest', '1', db);
 
-  const moveCallsBeforeReassign = moveMock.mock.callCount();
   const result = await breakout.assignParticipant(roomId, 'sock-guest', '2', db);
-
-  const [fromRoom, identity, destinationRoom] = moveMock.mock.calls[moveCallsBeforeReassign].arguments;
-  assert.equal(fromRoom, `${roomId}:1`, 'moves from the old breakout');
-  assert.equal(identity, 'sock-guest');
-  assert.equal(destinationRoom, `${roomId}:2`);
   assert.equal(result.ok, true);
+
+  const assignment = db.prepare(
+    'SELECT * FROM breakout_assignments WHERE main_room = ? AND participant_identity = ?'
+  ).get(roomId, 'sock-guest');
+  assert.equal(assignment.breakout_name, '2', 'assignment moved to group 2');
   db.close();
 });
 
-test('assignParticipant rejects a breakout that does not exist', async (t) => {
+test('assignParticipant rejects a breakout that does not exist', async () => {
   const db = newDb();
   const roomId = 'room-missing-1';
   makeRoom(roomId, db, true);
-  withLiveKitEnv(t);
-
-  const moveMock = t.mock.method(RoomServiceClient.prototype, 'moveParticipant', async () => ({}));
 
   const result = await breakout.assignParticipant(roomId, 'sock-guest', '9', db);
   assert.equal(result.code, 'BREAKOUT_NOT_FOUND');
-  assert.equal(moveMock.mock.callCount(), 0, 'moveParticipant never called');
   db.close();
 });
 
-test('assignParticipant rejects a participant not in the room roster', async (t) => {
+test('assignParticipant rejects a participant not in the room roster', async () => {
   const db = newDb();
   const roomId = 'room-noone-1';
-  makeRoom(roomId, db, false); // no guest
-  withLiveKitEnv(t);
-  t.mock.method(RoomServiceClient.prototype, 'createRoom', async (options) => ({ name: options.name }));
+  makeRoom(roomId, db, false);
   await breakout.createBreakout(roomId, '1', 'sock-host', db);
 
   const result = await breakout.assignParticipant(roomId, 'stranger', '1', db);
@@ -251,23 +160,14 @@ test('assignParticipant rejects a participant not in the room roster', async (t)
 
 // --- Return to main ---
 
-test('returnParticipant calls moveParticipant back to the main room', async (t) => {
+test('returnParticipant deletes the assignment row', async () => {
   const db = newDb();
   const roomId = 'room-return-1';
   makeRoom(roomId, db, true);
-  withLiveKitEnv(t);
-  t.mock.method(RoomServiceClient.prototype, 'createRoom', async (options) => ({ name: options.name }));
-  const moveMock = t.mock.method(RoomServiceClient.prototype, 'moveParticipant', async () => ({}));
   await breakout.createBreakout(roomId, '1', 'sock-host', db);
   await breakout.assignParticipant(roomId, 'sock-guest', '1', db);
 
   const result = await breakout.returnParticipant(roomId, 'sock-guest', db);
-
-  const [fromRoom, identity, destinationRoom] = moveMock.mock.calls[moveMock.mock.callCount() - 1].arguments;
-  assert.equal(fromRoom, `${roomId}:1`, 'moves from the breakout');
-  assert.equal(identity, 'sock-guest');
-  assert.equal(destinationRoom, roomId, 'destination is the main room');
-
   assert.equal(result.ok, true);
   assert.equal(result.alreadyInMain, undefined);
 
@@ -278,12 +178,10 @@ test('returnParticipant calls moveParticipant back to the main room', async (t) 
   db.close();
 });
 
-test('returnParticipant for an unassigned participant is a no-op', async (t) => {
+test('returnParticipant for an unassigned participant is a no-op', async () => {
   const db = newDb();
   const roomId = 'room-noret-1';
   makeRoom(roomId, db, true);
-  withLiveKitEnv(t);
-  t.mock.method(RoomServiceClient.prototype, 'moveParticipant', async () => ({}));
 
   const result = await breakout.returnParticipant(roomId, 'sock-guest', db);
   assert.equal(result.ok, true);
@@ -293,30 +191,15 @@ test('returnParticipant for an unassigned participant is a no-op', async (t) => 
 
 // --- Teardown ---
 
-test('teardownBreakouts moves everyone back and deletes every {main}:N room', async (t) => {
+test('teardownBreakouts clears assignments and breakout rows', async () => {
   const db = newDb();
   const roomId = 'room-teardown-1';
   makeRoom(roomId, db, true);
-  withLiveKitEnv(t);
-  t.mock.method(RoomServiceClient.prototype, 'createRoom', async (options) => ({ name: options.name }));
-  const moveMock = t.mock.method(RoomServiceClient.prototype, 'moveParticipant', async () => ({}));
-  const deleteMock = t.mock.method(RoomServiceClient.prototype, 'deleteRoom', async () => ({}));
   await breakout.createBreakout(roomId, '1', 'sock-host', db);
   await breakout.createBreakout(roomId, '2', 'sock-host', db);
   await breakout.assignParticipant(roomId, 'sock-guest', '2', db);
 
-  const moveCallsBeforeTeardown = moveMock.mock.callCount();
   const result = await breakout.teardownBreakouts(roomId, db);
-
-  const moveCallsDuringTeardown = moveMock.mock.callCount() - moveCallsBeforeTeardown;
-  assert.equal(moveCallsDuringTeardown, 1, 'assigned participant returned to main');
-  const [fromRoom, , destinationRoom] = moveMock.mock.calls[moveMock.mock.callCount() - 1].arguments;
-  assert.equal(fromRoom, `${roomId}:2`);
-  assert.equal(destinationRoom, roomId);
-
-  assert.equal(deleteMock.mock.callCount(), 2, 'both {main}:N rooms deleted');
-  const deleted = deleteMock.mock.calls.map((c) => c.arguments[0]);
-  assert.deepEqual(new Set(deleted), new Set([`${roomId}:1`, `${roomId}:2`]));
 
   assert.equal(result.ok, true);
   assert.equal(result.removed, 2);
@@ -328,13 +211,10 @@ test('teardownBreakouts moves everyone back and deletes every {main}:N room', as
   db.close();
 });
 
-test('listBreakouts returns breakout state with identities', async (t) => {
+test('listBreakouts returns breakout state with identities', async () => {
   const db = newDb();
   const roomId = 'room-list-1';
   makeRoom(roomId, db, true);
-  withLiveKitEnv(t);
-  t.mock.method(RoomServiceClient.prototype, 'createRoom', async (options) => ({ name: options.name }));
-  t.mock.method(RoomServiceClient.prototype, 'moveParticipant', async () => ({}));
   await breakout.createBreakout(roomId, '1', 'sock-host', db);
   await breakout.assignParticipant(roomId, 'sock-guest', '1', db);
 
@@ -343,13 +223,14 @@ test('listBreakouts returns breakout state with identities', async (t) => {
   assert.equal(state.breakouts.length, 1);
   assert.equal(state.breakouts[0].name, '1');
   assert.deepEqual(state.breakouts[0].identities, ['sock-guest']);
-  assert.equal(state.assignments[0].livekitRoom, `${roomId}:1`);
+  assert.equal(state.assignments[0].breakoutName, '1');
   db.close();
 });
 
 // --- Host-only REST gate (self-harnessed, like host-controls.test.js) ---
 
-const SERVER_URL = 'http://localhost:3001';
+const TEST_PORT = 3030;
+const SERVER_URL = `http://localhost:${TEST_PORT}`;
 const serverDir = path.join(__dirname, '..');
 
 async function waitForServer(proc, timeoutMs = 15000) {
@@ -385,19 +266,11 @@ function emitAck(client, event, payload) {
   });
 }
 
-test('breakout endpoints reject non-host callers with 403', async (t) => {
-  // Fake LiveKit credentials so the server boots with media "configured"; the
-  // SFU calls land on 127.0.0.1:9 (connection refused -> error result). The
-  // host gate is what this test asserts - it fires before any SDK call.
+test('breakout endpoints reject non-host callers with 403; host actions succeed', async (t) => {
   const proc = spawn(process.execPath, ['src/index.js'], {
     cwd: serverDir,
     stdio: 'ignore',
-    env: {
-      ...process.env,
-      LIVEKIT_URL: 'https://127.0.0.1:9',
-      LIVEKIT_API_KEY: 'test-key',
-      LIVEKIT_API_SECRET: 'test-secret'
-    }
+    env: { ...process.env, PORT: String(TEST_PORT) }
   });
 
   t.after(() => {
@@ -417,7 +290,6 @@ test('breakout endpoints reject non-host callers with 403', async (t) => {
     const joined = await emitAck(guest, 'join-room', { roomId, displayName: 'Guest B' });
     assert.equal(joined.success, true, 'guest joined');
 
-    // Guest (wrong/no x-host-id) is refused on every breakout endpoint.
     const guestCreate = await fetch(`${SERVER_URL}/api/rooms/${roomId}/breakouts`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -445,13 +317,40 @@ test('breakout endpoints reject non-host callers with 403', async (t) => {
     });
     assert.equal(guestTeardown.status, 403, 'guest teardown -> 403');
 
-    // The hosting identity passes the gate (SFU is down here -> 400, not 401/403).
     const hostCreate = await fetch(`${SERVER_URL}/api/rooms/${roomId}/breakouts`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'x-host-id': host.id },
       body: JSON.stringify({ name: '1' })
     });
-    assert.notEqual(hostCreate.status, 403, 'host create is not forbidden');
+    assert.equal(hostCreate.status, 201, 'host create breakout -> 201');
+    const createdBody = await hostCreate.json();
+    assert.equal(createdBody.breakout.name, '1', 'host create persists the group');
+
+    const hostAssign = await fetch(`${SERVER_URL}/api/rooms/${roomId}/breakouts/assign`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-host-id': host.id },
+      body: JSON.stringify({ identity: guest.id, name: '1' })
+    });
+    assert.equal(hostAssign.status, 200, 'host assign -> 200');
+
+    const listRes = await fetch(`${SERVER_URL}/api/rooms/${roomId}/breakouts`, {
+      headers: { 'x-host-id': host.id }
+    });
+    const listBody = await listRes.json();
+    assert.equal(listBody.assignments.length, 1, 'assignment persisted and listed');
+
+    const hostReturn = await fetch(`${SERVER_URL}/api/rooms/${roomId}/breakouts/return`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-host-id': host.id },
+      body: JSON.stringify({ identity: guest.id })
+    });
+    assert.equal(hostReturn.status, 200, 'host return -> 200');
+
+    const hostTeardown = await fetch(`${SERVER_URL}/api/rooms/${roomId}/breakouts/teardown`, {
+      method: 'POST',
+      headers: { 'x-host-id': host.id }
+    });
+    assert.equal(hostTeardown.status, 200, 'host teardown -> 200');
   } finally {
     host.disconnect();
     guest.disconnect();

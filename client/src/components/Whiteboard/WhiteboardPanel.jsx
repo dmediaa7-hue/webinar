@@ -1,6 +1,5 @@
-import React, { useState, useEffect, useRef, useCallback, useContext } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { X, PenTool } from 'lucide-react';
-import { RoomContext, useDataChannel } from '@livekit/components-react';
 import { Excalidraw } from '@excalidraw/excalidraw';
 import '@excalidraw/excalidraw/index.css';
 import useStore from '../../store/useStore';
@@ -14,38 +13,22 @@ import {
   isStaleWhiteboardDelta,
   recordWhiteboardSeq
 } from '../../utils/whiteboardCodec';
-
-// Bridges the LiveKit 'whiteboard' data channel: send is handed up so local
-// edits can broadcast deltas (same pattern as PollChannel/ChatChannel).
-function WhiteboardChannel({ onMessage, onSendReady }) {
-  const { send } = useDataChannel('whiteboard', onMessage);
-
-  useEffect(() => {
-    onSendReady(send);
-    return () => onSendReady(null);
-  }, [send, onSendReady]);
-
-  return null;
-}
+import useCollabChannel from '../../hooks/useCollabChannel';
 
 export default function WhiteboardPanel({ onClose, roomId }) {
-  const liveKitRoom = useContext(RoomContext);
   const mySocketId = useStore((state) => state.mySocketId);
   const displayName = useStore((state) => state.displayName);
 
-  // null while the persisted scene is loading; Excalidraw mounts after load.
   const [restored, setRestored] = useState(null);
-  const sendRef = useRef(null);
   const apiRef = useRef(null);
-  const elementsRef = useRef([]);          // current authoritative scene
-  const lastSentRef = useRef([]);          // snapshot already broadcast
-  const seqRef = useRef(0);                // our own monotonically increasing seq
+  const elementsRef = useRef([]);
+  const lastSentRef = useRef([]);
+  const seqRef = useRef(0);
   const lastSeqBySenderRef = useRef(new Map());
-  const applyingRemoteRef = useRef(false); // echo guard: onChange during updateScene
+  const applyingRemoteRef = useRef(false);
   const broadcastTimerRef = useRef(null);
   const persistTimerRef = useRef(null);
 
-  // Load the persisted scene on open so a refreshed client recovers it.
   useEffect(() => {
     let cancelled = false;
     fetch(`${SERVER_URL}/api/rooms/${roomId}/whiteboard`)
@@ -67,11 +50,8 @@ export default function WhiteboardPanel({ onClose, roomId }) {
     return () => { cancelled = true; };
   }, [roomId]);
 
-  // Incoming delta: drop stale/replayed senders, merge by id, then push into
-  // the canvas. The echo guard makes the resulting onChange absorb rather
-  // than rebroadcast what we just applied.
-  const handleIncoming = useCallback((msg) => {
-    const decoded = decodeWhiteboardMessage(msg.payload);
+  const handleIncoming = useCallback((payload) => {
+    const decoded = decodeWhiteboardMessage(payload);
     if (!decoded) return;
     if (isStaleWhiteboardDelta(decoded, lastSeqBySenderRef.current)) return;
     recordWhiteboardSeq(decoded, lastSeqBySenderRef.current);
@@ -84,9 +64,10 @@ export default function WhiteboardPanel({ onClose, roomId }) {
     api.updateScene({ elements: merged });
   }, []);
 
-  // Local edit: throttle a delta broadcast (diff against the snapshot we
-  // last sent, never the full scene each stroke) and debounce a full-scene
-  // REST save for reload recovery.
+  const { send } = useCollabChannel('whiteboard', handleIncoming);
+  const sendRef = useRef(send);
+  sendRef.current = send;
+
   const scheduleBroadcast = useCallback(() => {
     if (broadcastTimerRef.current) clearTimeout(broadcastTimerRef.current);
     broadcastTimerRef.current = setTimeout(() => {
@@ -100,7 +81,7 @@ export default function WhiteboardPanel({ onClose, roomId }) {
         changed,
         removed
       });
-      sendRef.current?.(encodeWhiteboardMessage(delta), { reliable: true });
+      sendRef.current(encodeWhiteboardMessage(delta));
       lastSentRef.current = elementsRef.current;
     }, 200);
   }, [mySocketId, displayName]);
@@ -127,11 +108,6 @@ export default function WhiteboardPanel({ onClose, roomId }) {
     schedulePersist();
   }, [scheduleBroadcast, schedulePersist]);
 
-  const markSendReady = useCallback((send) => {
-    sendRef.current = send;
-  }, []);
-
-  // Clear pending timers; best-effort flush of the latest scene on close.
   useEffect(() => {
     return () => {
       if (broadcastTimerRef.current) clearTimeout(broadcastTimerRef.current);
@@ -146,8 +122,6 @@ export default function WhiteboardPanel({ onClose, roomId }) {
 
   return (
     <div className="absolute inset-0 z-20 flex flex-col bg-meeting-bg border border-meeting-border rounded-lg overflow-hidden">
-      {liveKitRoom && <WhiteboardChannel onMessage={handleIncoming} onSendReady={markSendReady} />}
-
       <div className="px-4 py-2.5 border-b border-meeting-border flex items-center justify-between shrink-0">
         <h3 className="font-semibold text-sm flex items-center gap-2">
           <PenTool size={16} className="text-primary" /> Whiteboard

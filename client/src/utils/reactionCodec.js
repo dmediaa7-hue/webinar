@@ -1,4 +1,4 @@
-// LiveKit data-channel reaction serialization. Pure ESM over globals
+// Reaction message serialization. Pure ESM over globals
 // (JSON / TextEncoder / TextDecoder / Date) so node:test can import it
 // directly. Message schema: {id, type:'emoji', emoji, sender, senderId, ts}
 // Reactions are ephemeral — they are never persisted.

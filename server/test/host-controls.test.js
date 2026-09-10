@@ -1,19 +1,16 @@
-// Host-control test: verifies server-side enforcement of LiveKit host rights.
-// Self-harnessed (spawns src/index.js like integration.test.js) so `npm test`
-// is deterministic. Asserts:
-//   1. The token endpoint derives roomAdmin from the participant roster, so a
-//      guest asking for roomAdmin=1 gets a non-admin token (JWT payload).
-//   2. A locked room refuses non-host token issuance (403 ROOM_LOCKED) while
-//      the host still receives a token.
-//   3. Non-host mute/kick socket events are no-ops; host mute/kick succeed.
+// Host-control test: verifies server-side enforcement of host rights over the
+// socket layer. Self-harnessed (spawns src/index.js like integration.test.js)
+// so `npm test` is deterministic. Asserts:
+//   1. Non-host mute/kick socket events are no-ops; host mute/kick succeed.
+//   2. Locking the room broadcasts room-locked; host unlock works.
 const { test } = require('node:test');
 const assert = require('node:assert');
 const { spawn } = require('child_process');
 const path = require('path');
 const { io } = require('socket.io-client');
-const jwt = require('jsonwebtoken');
 
-const SERVER_URL = 'http://localhost:3001';
+const TEST_PORT = 3010;
+const SERVER_URL = `http://localhost:${TEST_PORT}`;
 const serverDir = path.join(__dirname, '..');
 
 async function waitForServer(proc, timeoutMs = 15000) {
@@ -50,18 +47,10 @@ function emitAck(client, event, payload) {
 }
 
 test('host controls are enforced server-side', async (t) => {
-  // Stub LiveKit credentials so the token endpoint passes its isConfigured
-  // gate. Token minting is a local JWT sign (no network); the SFU admin calls
-  // made by mute/kick land on 127.0.0.1:9 (connection refused -> {ok:false}).
   const proc = spawn(process.execPath, ['src/index.js'], {
     cwd: serverDir,
     stdio: 'ignore',
-    env: {
-      ...process.env,
-      LIVEKIT_URL: 'https://127.0.0.1:9',
-      LIVEKIT_API_KEY: 'test-key',
-      LIVEKIT_API_SECRET: 'test-secret'
-    }
+    env: { ...process.env, PORT: String(TEST_PORT) }
   });
 
   t.after(() => {
@@ -74,7 +63,6 @@ test('host controls are enforced server-side', async (t) => {
   const guest = await connectClient();
 
   try {
-    // Host creates the room over the socket path.
     const created = await emitAck(host, 'create-room', {
       displayName: 'Host A',
       roomName: 'Host Controls'
@@ -82,34 +70,13 @@ test('host controls are enforced server-side', async (t) => {
     assert.equal(created.success, true, 'room created');
     const roomId = created.roomId;
 
-    // Guest joins with a passwordless room.
     const joined = await emitAck(guest, 'join-room', {
       roomId,
       displayName: 'Guest B'
     });
     assert.equal(joined.success, true, 'guest joined');
 
-    // 1. Token grants: roomAdmin must come from the roster, not the query param.
-    const hostTokenRes = await fetch(
-      `${SERVER_URL}/api/livekit/token?room=${roomId}&identity=${host.id}&name=Host%20A`
-    );
-    assert.equal(hostTokenRes.status, 200, 'host token issued');
-    const hostTokenBody = await hostTokenRes.json();
-    const hostGrants = jwt.decode(hostTokenBody.token);
-    assert.equal(hostGrants.video.roomAdmin, true, 'host token carries roomAdmin');
-
-    const guestTokenRes = await fetch(
-      `${SERVER_URL}/api/livekit/token?room=${roomId}&identity=${guest.id}&name=Guest%20B&roomAdmin=1`
-    );
-    assert.equal(guestTokenRes.status, 200, 'guest token issued');
-    const guestTokenBody = await guestTokenRes.json();
-    assert.equal(guestTokenBody.roomAdmin, false, 'server reports roomAdmin=false for guest');
-    const guestGrants = jwt.decode(guestTokenBody.token);
-    assert.equal(guestGrants.video.roomAdmin, false, 'guest token lacks roomAdmin despite roomAdmin=1');
-    assert.equal(guestGrants.video.canPublish, true, 'guest can still publish');
-    assert.equal(guestGrants.video.canSubscribe, true, 'guest can still subscribe');
-
-    // 3a. Non-host mute is a no-op: target never receives force-mute.
+    // 1a. Non-host mute is a no-op: target never receives force-mute.
     const guestGotForceMute = await new Promise((resolve) => {
       let fired = false;
       const onForceMute = () => {
@@ -125,7 +92,7 @@ test('host controls are enforced server-side', async (t) => {
     });
     assert.equal(guestGotForceMute, false, 'guest mute attempt did not mute anyone');
 
-    // 3b. Host mute succeeds: guest receives force-mute.
+    // 1b. Host mute succeeds: guest receives force-mute.
     const hostMutedGuest = await new Promise((resolve) => {
       const onForceMute = () => resolve(true);
       guest.once('force-mute', onForceMute);
@@ -134,32 +101,34 @@ test('host controls are enforced server-side', async (t) => {
     });
     assert.equal(hostMutedGuest, true, 'host mute reaches the guest');
 
-    // 3c. Non-host kick is a no-op: guest stays connected.
+    // 1c. Non-host kick is a no-op: guest stays connected.
     guest.emit('kick-participant', { targetId: host.id });
     await new Promise((r) => setTimeout(r, 700));
     assert.equal(guest.connected, true, 'guest kick attempt did not disconnect anyone');
     assert.equal(host.connected, true, 'host still connected after guest kick attempt');
 
-    // 2. Lock the room: guest token refused, host token still issued.
-    await emitAck(host, 'lock-room', { isLocked: true });
-    const lockedGuestRes = await fetch(
-      `${SERVER_URL}/api/livekit/token?room=${roomId}&identity=${guest.id}&name=Guest%20B`
-    );
-    assert.equal(lockedGuestRes.status, 403, 'guest token refused while locked');
-    const lockedGuestBody = await lockedGuestRes.json();
-    assert.equal(lockedGuestBody.code, 'ROOM_LOCKED', 'refusal carries ROOM_LOCKED code');
+    // 2. Lock the room: non-host can no longer join; host unlock reopens it.
+    const roomLockedEvent = new Promise((resolve) => {
+      guest.once('room-locked', (data) => resolve(data));
+    });
+    const lockedAck = await emitAck(host, 'lock-room', { isLocked: true });
+    assert.equal(lockedAck.success, true, 'host lock ack succeeds');
+    assert.equal(lockedAck.isLocked, true, 'lock ack reports locked');
+    assert.equal((await roomLockedEvent).isLocked, true, 'room-locked broadcast to room');
 
-    const lockedHostRes = await fetch(
-      `${SERVER_URL}/api/livekit/token?room=${roomId}&identity=${host.id}&name=Host%20A`
-    );
-    assert.equal(lockedHostRes.status, 200, 'host token still issued while locked');
+    const lockedGuest = await connectClient();
+    const lockedJoin = await emitAck(lockedGuest, 'join-room', { roomId, displayName: 'Locked Out' });
+    assert.equal(lockedJoin.success, false, 'join refused while locked');
+    assert.equal(lockedJoin.error, 'Room is locked', 'refusal message');
+    lockedGuest.disconnect();
 
-    // Host can unlock again.
-    await emitAck(host, 'lock-room', { isLocked: false });
-    const unlockedGuestRes = await fetch(
-      `${SERVER_URL}/api/livekit/token?room=${roomId}&identity=${guest.id}&name=Guest%20B`
-    );
-    assert.equal(unlockedGuestRes.status, 200, 'guest token issued again after unlock');
+    const unlockedAck = await emitAck(host, 'lock-room', { isLocked: false });
+    assert.equal(unlockedAck.isLocked, false, 'host unlock ack reports unlocked');
+
+    const reopenedGuest = await connectClient();
+    const reopenedJoin = await emitAck(reopenedGuest, 'join-room', { roomId, displayName: 'Reopened' });
+    assert.equal(reopenedJoin.success, true, 'join allowed again after unlock');
+    reopenedGuest.disconnect();
   } finally {
     host.disconnect();
     guest.disconnect();

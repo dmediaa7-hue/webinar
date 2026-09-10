@@ -1,6 +1,6 @@
 // Shared whiteboard persistence layer (task 16). Durable record of the
 // Excalidraw scene per room, debounced-write from the client so a reload
-// recovers the last saved state. Live traffic rides the LiveKit
+// recovers the last saved state. Live traffic rides the
 // 'whiteboard' data channel (deltas); this store is the reload fallback.
 const defaultDb = require('./db');
 

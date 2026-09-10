@@ -1,4 +1,4 @@
-// LiveKit data-channel chat serialization. Pure ESM over globals
+// Chat message serialization. Pure ESM over globals
 // (JSON / TextEncoder / TextDecoder) so node:test can import it directly.
 // Message schema: {id, sender, senderId, message, timestamp, isHost}
 

@@ -105,9 +105,9 @@ async function run() {
     const login = await res.json();
     assert(login.user && login.user.email === email, 'Login returns user');
 
-    res = await client.request('/api/livekit/status');
-    const status = await res.json();
-    console.log('  (LiveKit configured:', Boolean(status.configured), ')');
+    const statusPath = '/api/livekit/status';
+    res = await client.request(statusPath);
+    assert(res.status === 404, 'media status route removed -> 404');
 
     // --- Meeting scheduling API (task 17) ---
     // Unauthenticated create must be rejected before touching any DB logic.

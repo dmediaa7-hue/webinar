@@ -1,6 +1,5 @@
 // Breakout rooms (task 12) - client side of the multi-room simulation.
-// The server provisions '{mainRoom}:N' LiveKit rooms and moves participants
-// with RoomServiceClient.moveParticipant; the host manages everything through
+// The server provisions breakout rooms and moves participants via
 // host-gated REST endpoints (x-host-id header = the host's socket.id).
 // fetchImpl is injectable so the unit tests never touch the network.
 // API base mirrors constants.js SERVER_URL, guarded for node:test where
@@ -8,13 +7,11 @@
 const viteEnv = typeof import.meta !== 'undefined' && import.meta.env ? import.meta.env : {};
 const API_BASE = viteEnv.VITE_SERVER_URL || (viteEnv.DEV ? 'http://localhost:3001' : '');
 
-/** Extract the breakout label from a LiveKit room name; null for the main room / others. */
-export function breakoutRoomLabel(livekitRoomName, mainRoomId) {
-  if (!livekitRoomName || !mainRoomId) return null;
-  const prefix = `${mainRoomId}:`;
-  if (!livekitRoomName.startsWith(prefix)) return null;
-  const label = livekitRoomName.slice(prefix.length);
-  return label || null;
+/** Breakout label a given identity is currently assigned to, derived from assignments (or null). */
+export function breakoutRoomLabel(assignments, identity) {
+  if (!Array.isArray(assignments) || !identity) return null;
+  const entry = assignments.find((a) => a.identity === identity);
+  return entry?.breakoutName || null;
 }
 
 /** Smallest positive sequence number not claimed by an existing breakout. */

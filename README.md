@@ -1,22 +1,22 @@
 # Webinar - Video Conferencing Platform
 
-A web-based video conferencing application inspired by Zoom, built with React + LiveKit
-(SFU) on the frontend and Node.js + Express + Socket.io on the backend.
+A web-based video conferencing application inspired by Zoom, built with React +
+simple-peer **P2P WebRTC** on the frontend and Node.js + Express + Socket.io on
+the backend. No external media servers — all audio/video/screen traffic flows
+peer-to-peer between browsers; the server only relays signaling and non-media state.
 
 ## Features
 
-**Media (LiveKit SFU)**
-- **HD video & audio calls** — media flows through a LiveKit Selective Forwarding Unit (SFU)
+**Media (P2P WebRTC)**
+- **HD video & audio calls** — direct peer-to-peer mesh between browsers (simple-peer)
 - **Screen sharing** — share your entire screen or a specific window
-- **Virtual backgrounds** — blur, replace with an image, or none (`@livekit/track-processors`)
 - **Pre-join lobby** — camera preview + device picker before publishing
 
 **Collaboration**
-- **Real-time chat** — messages over the LiveKit data channel with typing indicators
+- **Real-time chat** — messages with typing indicators
 - **Reactions & emoji** — transient overlay bursts on participant tiles
 - **Polls & Q&A** — host-created polls with live results; Q&A with upvotes and host-mark-answered (persisted to SQLite)
-- **Whiteboard** — shared Excalidraw canvas, delta-synced over the data channel (persisted to SQLite)
-- **Closed captions / live transcription** — renders transcription data-channel segments (graceful empty state without an agent)
+- **Whiteboard** — shared Excalidraw canvas, delta-synced (persisted to SQLite)
 
 **Meetings & scheduling**
 - **Meeting scheduling** — create future meetings (title, start time, duration, passcode, waiting room); ICS download + Google Calendar "Add to Calendar" link
@@ -26,52 +26,52 @@ A web-based video conferencing application inspired by Zoom, built with React + 
 - **Participant management** — live participant list, host mute/kick, host transfer
 - **Host controls** — room locking, waiting room with admit/deny, force-mute
 - **Waiting room** — joiners are held until the host admits them
-- **Breakout rooms** — host provisions separate LiveKit rooms and moves participants via `RoomServiceClient.moveParticipant`
+- **Breakout rooms** — host provisions labeled groups; assignments broadcast over the collab relay (media stays peer-to-peer)
 
 **Accounts & recording**
 - **Real authentication** — register/login with server-issued session cookies (`/api/auth/*`); `POST /api/meetings` is owner-authorized
 - **Attendance** — per-participant join/leave log, downloadable as CSV or PDF (host only)
-- **Cloud recording** — LiveKit Egress room-composite recording (gracefully disabled when keys are absent)
+- **Local-disk recording** — the host picks a folder; the browser captures video + mixed audio and uploads the file to the server, which writes it to that folder on local disk
 - **Responsive design** — works on desktop, tablet, and mobile
 
 ## Tech Stack
 
 | Layer | Technology |
 |-------|-----------|
-| Frontend | React 18, Vite, Tailwind CSS, Zustand, LiveKit (`livekit-client`, `@livekit/components-react`) |
+| Frontend | React 18, Vite, Tailwind CSS, Zustand, simple-peer |
 | Backend | Node.js, Express, Socket.io |
-| Media | LiveKit SFU (WebRTC, server-relayed) |
-| Real-time state | WebSocket (Socket.io for non-media signaling: presence, host controls, waiting room, attendance, breakout, recording) |
-| Collab channels | LiveKit data channels (`chat`, `reactions`, `poll`, `qa`, `whiteboard`) |
-| Persistence | SQLite (rooms, auth sessions, scheduled meetings, polls, Q&A, whiteboards) |
+| Media | WebRTC P2P mesh (simple-peer, browser-to-browser) |
+| Real-time state | WebSocket (Socket.io: signaling, presence, host controls, waiting room, attendance, breakout, recording) |
+| Collab channels | Socket.io relay (`collab-relay` / `collab-message`: chat, reactions, poll, qa, whiteboard) |
+| Persistence | SQLite (rooms, auth sessions, scheduled meetings, polls, Q&A, whiteboards, recordings) |
 
 ## Architecture
 
 ```
-┌─────────────┐   Socket.io (REST-ish state)   ┌──────────────────┐
-│  React App  │ ◄────────────────────────────► │  Node.js Server  │
-│  (Client)   │   presence / host controls /    │  (Express + io)  │
-└──────┬──────┘   waiting room / attendance     └────────┬─────────┘
-       │                                                │
-       │  HTTPS/WSS                                    │  REST + SDK
-       │  media + data channels                        │  (token, egress,
-       ▼                                                ▼  moveParticipant)
-┌──────────────────────────────┐            ┌──────────────────────┐
-│        LiveKit SFU           │            │      LiveKit Cloud    │
-│  (audio/video/screen relay)  │ ◄────────► │  (SFU + agents)       │
-└──────────────────────────────┘            └──────────────────────┘
+┌─────────────┐   Socket.io (signaling + state)   ┌──────────────────┐
+│  React App  │ ◄───────────────────────────────► │  Node.js Server   │
+│  (Client A) │   offer/answer/ICE candidates /    │  (Express + io)   │
+└──────┬──────┘   presence / host controls /        └──────────────────┘
+       │           collab relay (chat/poll/...)              ▲
+       │  WebRTC (SRTP) direct P2P                          │ REST
+       │  audio/video/screen mesh                           │ (recording upload,
+       │                                                    │  attendance, breakouts)
+┌──────▼──────┐                                             │
+│  React App  │ ◄───────────────────────────────────────────┘
+│  (Client B) │   (same socket contract as Client A)
+└─────────────┘
 ```
 
 How it works:
-1. Users register/login; the server issues a session cookie (real auth, no fake credentials).
-2. Joining a room: the client requests a LiveKit token from the backend REST endpoint, then
-   connects to the LiveKit SFU — all audio/video/screen-share traffic flows through the SFU.
-3. The chat, reactions, polls, Q&A, and whiteboard channels ride LiveKit **data channels**,
-   so latency is low and the backend stays out of the media path.
-4. Socket.io handles non-media state that LiveKit does not: participant presence/attendance,
-   host mute/kick/lock, waiting-room admission, breakout coordination, and recording start/stop.
-5. If LiveKit keys are absent, key-gated features (media, recording, captions, virtual
-   backgrounds) show a clear "not configured" disabled state — the rest of the app still works.
+1. Users register/login; the server issues a session cookie (real auth).
+2. Joining a room: socket.io joins the room; the server relays `collab` events.
+3. The joining client initiates WebRTC peer connections (`OFFER`/`ANSWER`/`ICE_CANDIDATE`
+   relayed over socket.io) to every existing participant, and existing peers connect back —
+   a full P2P mesh. Media never touches the server.
+4. Chat, reactions, polls, Q&A, and whiteboard ride the `collab-relay` socket channel, so
+   the backend is a thin forwarder and everyone stays in sync.
+5. Recording: the host enters a folder on local disk, the browser records (MediaRecorder +
+   WebAudio mix of remote participants), and the server stores the uploaded file there.
 
 ## Getting Started
 
@@ -80,7 +80,7 @@ How it works:
 - [Node.js](https://nodejs.org/) 18+ (comes with npm)
 - Webcam & microphone (for video/audio calls)
 - Modern browser (Chrome, Firefox, Edge recommended)
-- Optional: a [LiveKit Cloud](https://cloud.livekit.io) project for media features
+- No third-party media services required
 
 ### Installation
 
@@ -99,13 +99,6 @@ cd ../client && npm install           # frontend
 ```env
 PORT=3001
 CLIENT_URL=http://localhost:5173
-
-# LiveKit Cloud credentials — optional. Without these, LiveKit features show
-# a "not configured" state; the rest of the app still works.
-# Get them from https://cloud.livekit.io -> Project -> Settings -> Keys
-LIVEKIT_URL=wss://your-project.livekit.cloud
-LIVEKIT_API_KEY=your-api-key
-LIVEKIT_API_SECRET=your-api-secret
 
 # Secret used to sign auth session cookies
 JWT_SECRET=change-me
@@ -128,7 +121,7 @@ To test video calls, open the app in **two different browser windows** (incognit
 
 1. **Window 1**: Register an account → start a meeting (or schedule one and click Start) → copy the invite link
 2. **Window 2**: Open the invite link → join with a second account
-3. Both clients should connect through LiveKit and see each other's video/audio
+3. Both clients should connect peer-to-peer (signaling relayed by the server) and see each other's video/audio
 
 ## Project Structure
 
@@ -137,7 +130,7 @@ webinar/
 ├── client/                 # React frontend
 │   ├── src/
 │   │   ├── components/     # UI components (Meeting, Chat, Lobby, Participants, Polls, ...)
-│   │   ├── hooks/          # Custom React hooks (useLiveKitRoom, useLiveKitSync, useSocket)
+│   │   ├── hooks/          # Custom React hooks (useWebRTC, useMedia, useCollabChannel, useSocket)
 │   │   ├── store/          # Zustand state management
 │   │   ├── utils/          # Constants, codecs (chat/reactions/poll/qa/whiteboard), exports
 │   │   ├── test/           # Unit tests (node:test)
@@ -154,10 +147,10 @@ webinar/
 │   │   ├── rooms.js        # Room management (incl. scheduled-meeting materialization)
 │   │   ├── meetings.js     # Meeting scheduling + start/end state
 │   │   ├── invite.js       # ICS + Google Calendar links + join URLs
-│   │   ├── signaling.js    # WebRTC signaling relay (offer/answer/candidate)
+│   │   ├── signaling.js    # WebRTC signaling relay (offer/answer/candidate + collab relay)
 │   │   ├── chat.js         # Chat + typing relay
-│   │   ├── recording.js    # LiveKit Egress cloud recording
-│   │   ├── livekit.js      # LiveKit token/URL helpers
+│   │   ├── recording.js    # Local-disk recording storage (host-chosen folder)
+│   │   ├── breakout.js     # Breakout room provisioning (labeled groups)
 │   │   ├── db.js           # SQLite persistence
 │   │   └── utils.js        # Helpers
 │   ├── test/               # Server unit + integration tests
@@ -172,11 +165,13 @@ webinar/
 | Event | Description |
 |-------|-------------|
 | `join-room` / `leave-room` | Join / leave a meeting room |
-| `typing-indicator` | Broadcast typing status (chat itself is on a data channel) |
+| `offer` / `answer` / `ice-candidate` | WebRTC signaling relay (P2P) |
+| `collab-relay` | Relay one payload on a collab channel (`chat`, `reactions`, `poll`, `qa`, `whiteboard`) |
+| `typing-indicator` | Broadcast typing status |
 | `mute-participant` / `kick-participant` | Host moderation |
 | `lock-room` / `toggle-waiting-room` | Host room state |
 | `admit-waiting` / `deny-waiting` | Waiting-room admission (host) |
-| `start-recording` / `stop-recording` | LiveKit Egress recording |
+| `start-recording` / `stop-recording` | Recording state broadcast (host-gated) |
 | `get-attendance` | Attendance log request |
 
 ### Server → Client
@@ -184,13 +179,14 @@ webinar/
 |-------|-------------|
 | `room-joined` | Successfully joined a room (with settings + participants) |
 | `participant-joined` / `participant-left` | Presence changes (+ host transfer) |
+| `collab-message` | Relay of a collab-channel payload (chat/poll/qa/whiteboard/reactions) |
 | `user-typing` | Remote typing indicator |
 | `kicked` / `force-mute` / `room-locked` | Host actions |
 | `recording-started` / `recording-stopped` | Recording state |
 | `attendance-updated` / `waiting-list-updated` | Live lists |
 | `breakout-updated` | Breakout room layout changes |
 
-### Data channels (LiveKit)
+### Collab relay channels
 | Channel | Payload | Use |
 |---------|---------|-----|
 | `chat` | `{id, sender, body, ts}` codec | Chat messages |
@@ -198,49 +194,58 @@ webinar/
 | `poll` | `{action, pollId, question, options, vote...}` | Live polls |
 | `qa` | `{action, questionId, body, upvote, answered...}` | Q&A |
 | `whiteboard` | serialized Excalidraw deltas | Shared whiteboard |
-| `lk.transcription` | segments | Closed captions |
+
+All collab channels ride the `collab-relay` / `collab-message` socket pair instead
+of proprietary data channels — one shared transport, no per-channel sessions.
+
+## Recording To Local Disk
+
+- **Who**: only the meeting host (server re-validates `x-host-id`; `hostId` must match the room host's socket id).
+- **How**: the host types a folder path (e.g. `E:\WebinarRecordings` or `~/Screencasts`).
+  The browser records the screen/camera plus a WebAudio mix of remote participants,
+  then uploads the file as base64 JSON.
+- **Where**: the server writes the file to exactly that folder (creating it if missing)
+  and records a row in SQLite (`recordings` table). The saved path is returned to the host.
+- **Format**: `.webm` (browser-native MediaRecorder).
 
 ## FAQ
 
 ### How many participants can join?
 
-Media flows through a LiveKit SFU, so a single server can relay hundreds of
-participants (the SFU forwards, never re-encodes). For truly large webinars you
-scale LiveKit horizontally (Redis multi-node) rather than the browser doing all
-the work.
+Media flows peer-to-peer (a full mesh), so every client uploads once per peer —
+bandwidth cost is O(n²). This is ideal for small-to-medium meetings (roughly 2–15
+participants depending on upload speed). There is no SFU and no server-side
+relay, so there is also no per-minutes media cost.
 
 ### Does the server handle video?
 
-It relays signaling and issues tokens, but LiveKit's SFU forwards the actual
-media. This keeps per-client bandwidth fixed (each client uploads once) instead
-of the O(n²) cost of pure P2P mesh.
+No. It relays WebRTC signaling (offers/answers/ICE candidates) and all non-media
+state over socket.io. Audio/video/screen data goes browser-to-browser directly.
 
-### Why does recording require LiveKit keys?
+### Why does recording go to local disk?
 
-Recording uses LiveKit Egress — the SFU transcodes the room to a file on the
-server side. Without `LIVEKIT_URL`/`LIVEKIT_API_KEY`/`LIVEKIT_API_SECRET` in
-`server/.env` the recording button is disabled with a clear message, and the
-media features show a "LiveKit is not configured" notice.
+There is no cloud media server to transcode on. Recording is intentionally
+host-side: the browser captures what the host sees/hears and the server persists
+the file to the folder the host chose. This keeps media traffic zero-cost and
+the files entirely under the host's control.
 
 ## Roadmap
 
-- [x] P2P video/audio calls
+- [x] P2P video/audio calls (simple-peer mesh)
 - [x] Screen sharing
-- [x] Real-time chat (data channel) + typing indicators
+- [x] Real-time chat (collab relay) + typing indicators
 - [x] Participant management (host mute/kick, host transfer)
 - [x] Host controls (mute/kick/lock/waiting room)
 - [x] Pre-join lobby with camera preview & device picker
 - [x] Responsive UI (desktop/tablet/mobile)
-- [x] **SFU architecture via LiveKit** (replaces P2P/simple-peer)
-- [x] Cloud recording (LiveKit Egress)
-- [x] Virtual backgrounds (blur / image / none)
-- [x] Breakout rooms (multi-room + `moveParticipant`)
+- [x] **Reverted from LiveKit SFU back to pure P2P WebRTC** (no media server)
+- [x] Local-disk recording (host-chosen folder)
+- [x] Breakout rooms (labeled groups over the collab relay)
 - [x] **Authentication & real user accounts** (register/login, session cookies)
 - [x] **Meeting scheduling & calendar integration** (ICS + Google Calendar links)
 - [x] Waiting room (host admit/deny)
-- [x] Closed captions / live transcription (data channel, graceful empty state)
-- [x] Reactions & emoji (data-channel bursts)
-- [x] Polls & Q&A (data channel + SQLite persistence)
+- [x] Reactions & emoji (relay bursts)
+- [x] Polls & Q&A (relay + SQLite persistence)
 - [x] Whiteboard (Excalidraw, delta sync + persistence)
 - [x] Attendance export (CSV/PDF)
 

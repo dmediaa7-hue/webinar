@@ -27,5 +27,8 @@ Thumbs.db
 # OpenCode
 .omo/
 
+# Playwright MCP runtime
+.playwright-mcp/
+
 # Misc
 *.md~

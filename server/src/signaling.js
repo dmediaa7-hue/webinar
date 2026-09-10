@@ -112,6 +112,12 @@ function handleSignaling(io, socket) {
     updateParticipant(room.id, targetId, { isScreenSharing: false });
     io.to(targetId).emit('force-stop-screen-share');
   });
+
+  socket.on('collab-relay', ({ channel, payload }) => {
+    const room = getRoom(socket.data.roomId);
+    if (!room) return;
+    socket.to(room.id).emit('collab-message', { channel, payload, from: socket.id, fromName: socket.data.displayName });
+  });
 }
 
 module.exports = { handleSignaling };

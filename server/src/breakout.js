@@ -1,24 +1,8 @@
-// Breakout rooms (task 12) - multi-room simulation + moveParticipant.
-// LiveKit has no native breakout concept (issue #482), so breakouts are
-// simulated as separate rooms named '{mainRoom}:1', '{mainRoom}:2', ... and
-// the host moves participants between them with RoomServiceClient
-// .moveParticipant(room, identity, destinationRoom). Breakout config +
-// assignments are persisted to SQLite so the layout survives restarts.
-// Every helper returns gracefully when LiveKit keys are absent:
-//   { error: 'LiveKit is not configured', code: 'LIVEKIT_NOT_CONFIGURED' }
+// Breakout rooms are host-managed labeled GROUPS on the main room. In pure P2P
+// there are no separate media rooms, so config + assignments persist to SQLite
+// only - participants keep their single WebRTC connection to the main room.
 const { getRoom } = require('./rooms');
-const livekit = require('./livekit');
 const defaultDb = require('./db');
-
-/** True when the server has LIVEKIT_URL + API key/secret configured. */
-function isConfigured() {
-  return livekit.isConfigured();
-}
-
-/** LiveKit room name for a breakout: '{mainRoom}:{name}'. */
-function breakoutRoomName(mainRoom, name) {
-  return `${mainRoom}:${name}`;
-}
 
 /** Sanitize a breakout label; null when invalid (empty or >24 chars or bad chars). */
 function cleanBreakoutName(name) {
@@ -54,7 +38,6 @@ function listBreakouts(roomId, db = defaultDb) {
 
   const breakout = rooms.map((r) => ({
     name: r.breakout_name,
-    livekitRoom: r.livekit_room,
     createdBy: r.created_by,
     createdAt: r.created_at,
     identities: assignments
@@ -68,15 +51,14 @@ function listBreakouts(roomId, db = defaultDb) {
     breakouts: breakout,
     assignments: assignments.map((a) => ({
       identity: a.participant_identity,
-      breakoutName: a.breakout_name,
-      livekitRoom: breakoutRoomName(roomId, a.breakout_name)
+      breakoutName: a.breakout_name
     }))
   };
 }
 
 /**
- * Provision a breakout room on the SFU + persist it. Name is optional; a
- * missing/invalid name auto-numbers from the existing breakouts.
+ * Register a breakout group. Name is optional; a missing/invalid name
+ * auto-numbers from the existing breakouts.
  * @returns {Promise<{breakout, roomId}|{error, code}>}
  */
 async function createBreakout(roomId, srcName = null, hostIdentity = null, db = defaultDb) {
@@ -84,42 +66,28 @@ async function createBreakout(roomId, srcName = null, hostIdentity = null, db = 
   if (!room) return { error: 'Room not found' };
 
   const name = cleanBreakoutName(srcName) || nextBreakoutName(roomId, [srcName], db);
-  const livekitRoom = breakoutRoomName(roomId, name);
 
   const exists = db.prepare(
     'SELECT id FROM breakout_rooms WHERE main_room = ? AND breakout_name = ?'
   ).get(roomId, name);
   if (exists) return { error: `Breakout '${name}' already exists`, code: 'DUPLICATE_BREAKOUT' };
 
-  if (!isConfigured()) {
-    return { error: 'LiveKit is not configured', code: 'LIVEKIT_NOT_CONFIGURED' };
-  }
-
-  try {
-    await livekit.createRoom(livekitRoom);
-  } catch (err) {
-    return { error: err.message || 'Failed to provision breakout room' };
-  }
-
   const breakout = {
     name,
-    livekitRoom,
     createdBy: hostIdentity,
     createdAt: Date.now()
   };
   db.prepare(`
-    INSERT INTO breakout_rooms (main_room, breakout_name, livekit_room, created_by, created_at)
-    VALUES (?, ?, ?, ?, ?)
-  `).run(roomId, name, livekitRoom, hostIdentity, breakout.createdAt);
+    INSERT INTO breakout_rooms (main_room, breakout_name, created_by, created_at)
+    VALUES (?, ?, ?, ?)
+  `).run(roomId, name, hostIdentity, breakout.createdAt);
 
   return { roomId, breakout };
 }
 
 /**
- * Move a participant into a breakout room. The participant's current room is
- * read from the persisted assignment (or the main room when unassigned), then
- * moveParticipant relocates their existing connection to '{main}:{name}'.
- * @returns {Promise<{ok:true, livekitRoom, identity}|{error, code}>}
+ * Assign a participant to a breakout group (upsert; no media-room move needed).
+ * @returns {Promise<{ok:true, identity, roomId}|{error, code}>}
  */
 async function assignParticipant(roomId, identity, breakoutName, db = defaultDb) {
   const room = getRoom(roomId);
@@ -136,112 +104,52 @@ async function assignParticipant(roomId, identity, breakoutName, db = defaultDb)
   const isParticipant = room.participants.has(identity);
   if (!isParticipant) return { error: 'Participant not in room', code: 'PARTICIPANT_NOT_FOUND' };
 
-  if (!isConfigured()) {
-    return { error: 'LiveKit is not configured', code: 'LIVEKIT_NOT_CONFIGURED' };
-  }
-
-  const current = db.prepare(
-    'SELECT breakout_name FROM breakout_assignments WHERE main_room = ? AND participant_identity = ?'
-  ).get(roomId, identity);
-  const fromRoom = current ? breakoutRoomName(roomId, current.breakout_name) : roomId;
-  const toRoom = breakoutRoomName(roomId, label);
-
-  try {
-    await livekit.moveParticipant(fromRoom, identity, toRoom);
-  } catch (err) {
-    return { error: err.message || 'Failed to move participant' };
-  }
-
   db.prepare(`
     INSERT INTO breakout_assignments (main_room, breakout_name, participant_identity, assigned_at)
     VALUES (?, ?, ?, ?)
     ON CONFLICT(main_room, participant_identity) DO UPDATE SET breakout_name = excluded.breakout_name
   `).run(roomId, label, identity, Date.now());
 
-  return { ok: true, identity, livekitRoom: toRoom, roomId };
+  return { ok: true, identity, roomId };
 }
 
 /**
- * Move a participant back to the main room from their assigned breakout.
- * @returns {Promise<{ok:true, livekitRoom, identity}|{error, code}>}
+ * Return a participant to the main group (removes their assignment).
+ * @returns {Promise<{ok:true, identity, alreadyInMain?: boolean, roomId}|{error, code}>}
  */
 async function returnParticipant(roomId, identity, db = defaultDb) {
   const assignment = db.prepare(
     'SELECT breakout_name FROM breakout_assignments WHERE main_room = ? AND participant_identity = ?'
   ).get(roomId, identity);
   if (!assignment) {
-    return { ok: true, identity, livekitRoom: roomId, alreadyInMain: true };
-  }
-
-  const fromRoom = breakoutRoomName(roomId, assignment.breakout_name);
-
-  if (!isConfigured()) {
-    return { error: 'LiveKit is not configured', code: 'LIVEKIT_NOT_CONFIGURED' };
-  }
-
-  try {
-    await livekit.moveParticipant(fromRoom, identity, roomId);
-  } catch (err) {
-    return { error: err.message || 'Failed to return participant' };
+    return { ok: true, identity, alreadyInMain: true, roomId };
   }
 
   db.prepare(
     'DELETE FROM breakout_assignments WHERE main_room = ? AND participant_identity = ?'
   ).run(roomId, identity);
 
-  return { ok: true, identity, livekitRoom: roomId, roomId };
+  return { ok: true, identity, roomId };
 }
 
 /**
- * End breakouts: move every assigned participant back to the main room, tear
- * down the '{main}:N' rooms on the SFU, and clear the persisted layout.
+ * End breakouts: clear every assignment and breakout row for the room.
  */
 async function teardownBreakouts(roomId, db = defaultDb) {
   const room = getRoom(roomId);
   if (!room) return { error: 'Room not found' };
 
-  const assignments = db.prepare(
-    'SELECT * FROM breakout_assignments WHERE main_room = ?'
-  ).all(roomId);
-  const breakoutRows = db.prepare(
-    'SELECT livekit_room FROM breakout_rooms WHERE main_room = ?'
-  ).all(roomId);
-
-  if (!isConfigured()) {
-    return { error: 'LiveKit is not configured', code: 'LIVEKIT_NOT_CONFIGURED' };
-  }
-
-  const moveErrors = [];
-  for (const a of assignments) {
-    const fromRoom = breakoutRoomName(roomId, a.breakout_name);
-    try {
-      await livekit.moveParticipant(fromRoom, a.participant_identity, roomId);
-    } catch (err) {
-      moveErrors.push(err.message || 'move failed');
-    }
-  }
-
-  const deleteErrors = [];
-  for (const r of breakoutRows) {
-    try {
-      await livekit.deleteRoom(r.livekit_room);
-    } catch (err) {
-      deleteErrors.push(err.message || 'delete failed');
-    }
-  }
+  const rows = db.prepare(
+    'SELECT COUNT(*) AS count FROM breakout_rooms WHERE main_room = ?'
+  ).get(roomId);
 
   db.prepare('DELETE FROM breakout_assignments WHERE main_room = ?').run(roomId);
   db.prepare('DELETE FROM breakout_rooms WHERE main_room = ?').run(roomId);
 
-  const remainingErrors = moveErrors.concat(deleteErrors);
-  return remainingErrors.length
-    ? { ok: true, roomId, removed: breakoutRows.length, errors: remainingErrors }
-    : { ok: true, roomId, removed: breakoutRows.length };
+  return { ok: true, roomId, removed: Number(rows.count) };
 }
 
 module.exports = {
-  isConfigured,
-  breakoutRoomName,
   cleanBreakoutName,
   nextBreakoutName,
   listBreakouts,

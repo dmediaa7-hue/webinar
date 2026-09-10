@@ -36,6 +36,9 @@ const useStore = create((set, get) => ({
   // Participants: Map of socketId -> { socketId, userId, displayName, isHost, isMuted, isVideoOff, isScreenSharing, stream }
   participants: new Map(),
 
+  // P2P peer connections: Map of socketId -> SimplePeer instance (set by useWebRTC)
+  peers: new Map(),
+
   // Attendance log: [{ socketId, userId, displayName, isHost, joinedAt, leftAt }]
   attendance: [],
 
@@ -50,14 +53,14 @@ const useStore = create((set, get) => ({
   qaQuestions: [],
 
   // UI
-  activePanel: 'none', // 'none' | 'chat' | 'participants' | 'captions' | 'breakouts' | 'polls' | 'qa'
+  activePanel: 'none', // 'none' | 'chat' | 'participants' | 'breakouts' | 'polls' | 'qa' | 'whiteboard'
   isScreenSharing: false,
   screenShareStream: null,
 
   // Recording
   isRecording: false,
 
-  // Breakout state: { roomId, mainRoom, breakouts: [{name, livekitRoom, identities}], assignments: [{identity, breakoutName, livekitRoom}] } | null
+  // Breakout state: { roomId, mainRoom, breakouts: [{name, identities}], assignments: [{identity, breakoutName}] } | null
   breakoutState: null,
 
   // Ephemeral reactions: Map<identity, [{id, type, emoji, sender, senderId, ts}]>
@@ -65,9 +68,6 @@ const useStore = create((set, get) => ({
   reactions: new Map(),
   // Recent reactions history for the picker: [{emoji, sender, ts}], newest first
   recentReactions: [],
-
-  // Virtual background choice: { mode: 'none'|'blur'|'image', imagePath: string|null }
-  backgroundChoice: null,
 
   // Actions
   setRoom: (roomId) => set({ roomId }),
@@ -83,7 +83,6 @@ const useStore = create((set, get) => ({
   setIsVideoOff: (isVideoOff) => set({ isVideoOff }),
   setIsConnecting: (isConnecting) => set({ isConnecting }),
   setIsRecording: (isRecording) => set({ isRecording }),
-  setBackgroundChoice: (backgroundChoice) => set({ backgroundChoice }),
   setBreakoutState: (breakoutState) => set({ breakoutState }),
   setWaitingForRoom: (waitingForRoom) => set({ waitingForRoom }),
   setWaitingRoomId: (waitingRoomId) => set({ waitingRoomId }),
@@ -283,6 +282,18 @@ const useStore = create((set, get) => ({
     }
   },
 
+  addPeer: (socketId, peer) => {
+    const peers = new Map(get().peers);
+    peers.set(socketId, peer);
+    set({ peers });
+  },
+
+  removePeer: (socketId) => {
+    const peers = new Map(get().peers);
+    peers.delete(socketId);
+    set({ peers });
+  },
+
   clearParticipants: () => set({ participants: new Map() }),
 
   setAttendance: (attendance) => set({ attendance }),
@@ -333,6 +344,7 @@ const useStore = create((set, get) => ({
     isVideoOff: false,
     isConnecting: false,
     participants: new Map(),
+    peers: new Map(),
     attendance: [],
     messages: [],
     isTyping: false,
@@ -341,7 +353,6 @@ const useStore = create((set, get) => ({
     isScreenSharing: false,
     screenShareStream: null,
     isRecording: false,
-    backgroundChoice: null,
     breakoutState: null,
     reactions: new Map(),
     recentReactions: [],

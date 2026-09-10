@@ -1,6 +1,5 @@
-import React, { useState, useEffect, useRef, useCallback, useContext } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { X, BarChart3, Check, Lock, Plus, Minus } from 'lucide-react';
-import { RoomContext, useDataChannel } from '@livekit/components-react';
 import useStore from '../../store/useStore';
 import { SERVER_URL } from '../../utils/constants';
 import {
@@ -11,19 +10,7 @@ import {
   decodePollMessage,
   tallyPollVotes
 } from '../../utils/pollCodec';
-
-// Bridges the LiveKit 'poll' data channel into the store (same pattern as
-// ChatChannel): the send function is handed up so actions can broadcast.
-function PollChannel({ onMessage, onSendReady }) {
-  const { send } = useDataChannel('poll', onMessage);
-
-  useEffect(() => {
-    onSendReady(send);
-    return () => onSendReady(null);
-  }, [send, onSendReady]);
-
-  return null;
-}
+import useCollabChannel from '../../hooks/useCollabChannel';
 
 export default function PollPanel({ onClose, roomId }) {
   const polls = useStore((state) => state.polls);
@@ -31,19 +18,15 @@ export default function PollPanel({ onClose, roomId }) {
   const isHost = useStore((state) => state.isHost);
   const displayName = useStore((state) => state.displayName);
   const participants = useStore((state) => state.participants);
-  const liveKitRoom = useContext(RoomContext);
 
   const [question, setQuestion] = useState('');
   const [options, setOptions] = useState(['', '']);
-  const [hasChannel, setHasChannel] = useState(false);
   const [formError, setFormError] = useState('');
-  const sendRef = useRef(null);
 
   const hostIdentity = isHost
     ? mySocketId
     : [...participants.values()].find((p) => p.isHost)?.socketId;
 
-  // Restore persisted polls when the panel opens.
   useEffect(() => {
     let cancelled = false;
     fetch(`${SERVER_URL}/api/rooms/${roomId}/polls`)
@@ -55,20 +38,14 @@ export default function PollPanel({ onClose, roomId }) {
     return () => { cancelled = true; };
   }, [roomId]);
 
-  // Incoming broadcasts: decode and apply. Host-only actions (create, close)
-  // are ignored unless they carry the room's host identity, so a participant
-  // cannot launch or close a poll (Must NOT allow participants to create).
-  const handleIncoming = useCallback((msg) => {
-    const decoded = decodePollMessage(msg.payload);
+  const handleIncoming = useCallback((payload) => {
+    const decoded = decodePollMessage(payload);
     if (!decoded) return;
     if ((decoded.action === 'create' || decoded.action === 'close') && hostIdentity && decoded.creatorId !== hostIdentity) return;
     useStore.getState().applyPollMessage(decoded);
   }, [hostIdentity]);
 
-  const markSendReady = useCallback((send) => {
-    sendRef.current = send;
-    setHasChannel(Boolean(send));
-  }, []);
+  const { send } = useCollabChannel('poll', handleIncoming);
 
   const api = useCallback((path, options) => fetch(`${SERVER_URL}${path}`, options), []);
 
@@ -79,8 +56,6 @@ export default function PollPanel({ onClose, roomId }) {
     setFormError('');
 
     try {
-      // Persist first so the broadcast carries the server-approved poll id;
-      // restore on refresh then matches live state exactly.
       const res = await api(`/api/rooms/${roomId}/polls`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'x-host-id': mySocketId },
@@ -97,9 +72,8 @@ export default function PollPanel({ onClose, roomId }) {
         creatorId: mySocketId,
         createdAt: data.poll.createdAt
       });
-      // Sender is not echoed on data channels; apply optimistically.
       useStore.getState().applyPollMessage(poll);
-      sendRef.current?.(encodePollMessage(poll), { reliable: true });
+      send(encodePollMessage(poll));
       setQuestion('');
       setOptions(['', '']);
     } catch {
@@ -116,7 +90,7 @@ export default function PollPanel({ onClose, roomId }) {
       optionIndex
     });
     useStore.getState().applyPollMessage(vote);
-    sendRef.current?.(encodePollMessage(vote), { reliable: true });
+    send(encodePollMessage(vote));
     try {
       await api(`/api/rooms/${roomId}/polls/${poll.pollId}/votes`, {
         method: 'POST',
@@ -132,7 +106,7 @@ export default function PollPanel({ onClose, roomId }) {
     if (!isHost) return;
     const closeMsg = buildPollClose({ pollId: poll.pollId, creatorId: mySocketId });
     useStore.getState().applyPollMessage(closeMsg);
-    sendRef.current?.(encodePollMessage(closeMsg), { reliable: true });
+    send(encodePollMessage(closeMsg));
   };
 
   const setOption = (index, value) =>
@@ -143,8 +117,6 @@ export default function PollPanel({ onClose, roomId }) {
 
   return (
     <div className="panel h-full">
-      {liveKitRoom && <PollChannel onMessage={handleIncoming} onSendReady={markSendReady} />}
-
       <div className="px-4 py-3 border-b border-meeting-border flex items-center justify-between">
         <h3 className="font-semibold text-sm flex items-center gap-2">
           <BarChart3 size={16} className="text-primary" /> Polls
@@ -197,8 +169,7 @@ export default function PollPanel({ onClose, roomId }) {
             </button>
             <button
               onClick={launchPoll}
-              disabled={!hasChannel}
-              className="flex-1 py-2 bg-primary hover:bg-primary-dark rounded-lg text-sm font-medium transition-colors disabled:opacity-50"
+              className="flex-1 py-2 bg-primary hover:bg-primary-dark rounded-lg text-sm font-medium transition-colors"
             >
               Launch poll
             </button>
@@ -243,7 +214,7 @@ export default function PollPanel({ onClose, roomId }) {
                     <button
                       key={index}
                       onClick={() => castVote(poll, index)}
-                      disabled={poll.isClosed || !hasChannel}
+                      disabled={poll.isClosed}
                       className={`relative w-full text-left px-3 py-2 rounded-lg border text-sm transition-all ${
                         isMyChoice
                           ? 'border-primary bg-primary/10 text-white'

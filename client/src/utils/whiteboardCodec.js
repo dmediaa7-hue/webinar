@@ -1,4 +1,4 @@
-// LiveKit data-channel whiteboard serialization (topic 'whiteboard').
+// Whiteboard message serialization (topic 'whiteboard').
 // Pure ESM over globals (JSON / TextEncoder / TextDecoder) so node:test can
 // import it directly, mirroring chatCodec/reactionCodec/pollCodec.
 //

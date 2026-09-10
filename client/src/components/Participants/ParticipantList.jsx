@@ -1,12 +1,9 @@
 import React from 'react';
-import { useParticipants, useLocalParticipant } from '@livekit/components-react';
 import { X, MicOff, VideoOff, LogOut, Crown, Download, FileText, Check, DoorOpen } from 'lucide-react';
 import { getInitials, formatDateTime } from '../../utils/constants';
 import useStore from '../../store/useStore';
 import { admitWaitingUser, denyWaitingUser, toggleWaitingRoom } from '../../hooks/useSocket';
 
-// Sourced from LiveKit hooks; host badge via metadata or attendance cross-ref (socket.id === identity).
-// Attendance (socket-fed) stays for the "Left the meeting" section until task 19 removes it.
 export default function ParticipantList({
   onClose,
   isHost,
@@ -15,27 +12,20 @@ export default function ParticipantList({
   onDownloadAttendance
 }) {
   const attendance = useStore((s) => s.attendance);
-  const liveParticipants = useParticipants();
-  const { localParticipant } = useLocalParticipant();
-  const localIdentity = localParticipant?.identity;
+  const participants = useStore((s) => s.participants);
+  const mySocketId = useStore((s) => s.mySocketId);
   const waitingList = useStore((s) => s.waitingList);
   const waitingRoomEnabled = useStore((s) => s.roomSettings?.waitingRoomEnabled);
+
+  const participantEntries = Array.from(participants.entries());
 
   const leftEntries = attendance
     .filter((a) => a.leftAt)
     .sort((a, b) => b.leftAt - a.leftAt);
 
-  const joinedAtFor = (p) => {
-    const iso = p.joinedAt instanceof Date ? p.joinedAt.getTime() : p.joinedAt;
-    if (iso) return iso;
-    const entry = attendance.find((a) => a.socketId === p.identity && !a.leftAt);
+  const joinedAtFor = (socketId) => {
+    const entry = attendance.find((a) => a.socketId === socketId && !a.leftAt);
     return entry?.joinedAt || null;
-  };
-
-  const isHostFor = (p) => {
-    if (p.metadata?.includes('host')) return true;
-    const entry = attendance.find((a) => a.socketId === p.identity && !a.leftAt);
-    return Boolean(entry?.isHost);
   };
 
   return (
@@ -45,7 +35,7 @@ export default function ParticipantList({
         <h3 className="font-semibold text-sm">
           Participants{' '}
           <span className="ml-1 px-1.5 py-0.5 bg-meeting-card rounded text-xs text-gray-400">
-            {liveParticipants.length}
+            {participantEntries.length}
           </span>
         </h3>
         <button onClick={onClose} className="icon-btn text-gray-400 hover:text-white" aria-label="Close participants list">
@@ -53,7 +43,7 @@ export default function ParticipantList({
         </button>
       </div>
 
-      {/* Waiting room section (host only): admit or deny held joiners */}
+      {/* Waiting room section (host only) */}
       {isHost && waitingRoomEnabled && (
         <div className="px-4 py-3 border-b border-meeting-border">
           <p className="text-[10px] uppercase tracking-wide text-gray-500 mb-2 flex items-center justify-between">
@@ -101,25 +91,25 @@ export default function ParticipantList({
 
       {/* Participant list */}
       <div className="flex-1 overflow-y-auto">
-        {liveParticipants.map((p) => {
-          const isLocalRow = p.identity === localIdentity;
-          const displayName = p.name || p.identity;
-          const rowHost = isHostFor(p);
+        {participantEntries.map(([socketId, p]) => {
+          const isLocalRow = socketId === mySocketId;
+          const pDisplayName = p.displayName || 'Guest';
+          const rowHost = p.isHost;
           return (
             <div
-              key={p.identity}
+              key={socketId}
               className="flex items-center px-4 py-2.5 hover:bg-white/5 transition-colors group"
             >
               {/* Avatar */}
               <div className="relative mr-3 shrink-0">
                 <div className="w-9 h-9 rounded-full bg-gradient-to-br from-primary/60 to-meeting-card flex items-center justify-center">
                   <span className="text-sm font-semibold">
-                    {getInitials(displayName)}
+                    {getInitials(pDisplayName)}
                   </span>
                 </div>
-                {(!p.isMicrophoneEnabled || !p.isCameraEnabled) && (
+                {(p.isMuted || p.isVideoOff) && (
                   <div className="absolute -bottom-1 -right-1 w-4 h-4 rounded-full bg-red-600 flex items-center justify-center">
-                    {!p.isMicrophoneEnabled ? <MicOff size={8} /> : <VideoOff size={8} />}
+                    {p.isMuted ? <MicOff size={8} /> : <VideoOff size={8} />}
                   </div>
                 )}
               </div>
@@ -128,7 +118,7 @@ export default function ParticipantList({
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-1.5">
                   <span className="text-sm font-medium truncate">
-                    {displayName}
+                    {pDisplayName}
                     {isLocalRow && <span className="text-gray-400"> (You)</span>}
                   </span>
                   {rowHost && (
@@ -136,10 +126,10 @@ export default function ParticipantList({
                   )}
                 </div>
                 <div className="flex items-center gap-2 text-[10px] text-gray-500">
-                  {!p.isMicrophoneEnabled && <span className="flex items-center gap-0.5"><MicOff size={8} /> Muted</span>}
-                  {!p.isCameraEnabled && <span className="flex items-center gap-0.5"><VideoOff size={8} /> Video off</span>}
-                  {p.isMicrophoneEnabled && p.isCameraEnabled && <span className="text-green-500">Active</span>}
-                  {joinedAtFor(p) && <span className="text-gray-500">Joined {formatDateTime(joinedAtFor(p))}</span>}
+                  {p.isMuted && <span className="flex items-center gap-0.5"><MicOff size={8} /> Muted</span>}
+                  {p.isVideoOff && <span className="flex items-center gap-0.5"><VideoOff size={8} /> Video off</span>}
+                  {!p.isMuted && !p.isVideoOff && <span className="text-green-500">Active</span>}
+                  {joinedAtFor(socketId) && <span className="text-gray-500">Joined {formatDateTime(joinedAtFor(socketId))}</span>}
                 </div>
               </div>
 
@@ -147,14 +137,14 @@ export default function ParticipantList({
               {isHost && !isLocalRow && (
                 <div className="hidden group-hover:flex items-center gap-1">
                   <button
-                    onClick={() => onMuteParticipant(p.identity)}
+                    onClick={() => onMuteParticipant(socketId)}
                     className="p-1.5 rounded hover:bg-white/10 text-gray-300"
                     title="Mute"
                   >
                     <MicOff size={14} />
                   </button>
                   <button
-                    onClick={() => onKickParticipant(p.identity)}
+                    onClick={() => onKickParticipant(socketId)}
                     className="p-1.5 rounded hover:bg-red-600/80 text-gray-300 hover:text-white"
                     title="Remove from meeting"
                   >
