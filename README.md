@@ -43,7 +43,7 @@ peer-to-peer between browsers; the server only relays signaling and non-media st
 | Media | WebRTC P2P mesh (simple-peer, browser-to-browser) |
 | Real-time state | WebSocket (Socket.io: signaling, presence, host controls, waiting room, attendance, breakout, recording) |
 | Collab channels | Socket.io relay (`collab-relay` / `collab-message`: chat, reactions, poll, qa, whiteboard) |
-| Persistence | SQLite (rooms, auth sessions, scheduled meetings, polls, Q&A, whiteboards, recordings) |
+| Persistence | Turso libSQL (SQLite-compatible; embedded replica syncs from cloud; local SQLite fallback) |
 
 ## Architecture
 
@@ -111,6 +111,18 @@ JWT_SECRET=change-me
 # only when a call actually needs the relay.
 # CLOUDFLARE_TURN_KEY_ID=
 # CLOUDFLARE_TURN_KEY_API_TOKEN=
+
+# Turso (libSQL) remote database - REQUIRED for persistence on Render (its
+# free tier has no persistent disk, so a local SQLite file is wiped on every
+# redeploy/restart). When both are set, the server runs an embedded replica
+# that syncs to Turso every 60 seconds. Without them it falls back to a plain
+# local SQLite file (fine for local dev).
+#
+# Create a free database:  https://turso.tech  ->  turso db create webinar
+#   URL:   turso db show webinar --url           (libsql://webinar-<org>.turso.io)
+#   Token: turso db tokens create webinar
+TURSO_DATABASE_URL=libsql://webinar-<org>.turso.io
+TURSO_AUTH_TOKEN=
 ```
 
 ### Running the App
@@ -160,7 +172,7 @@ webinar/
 │   │   ├── chat.js         # Chat + typing relay
 │   │   ├── recording.js    # Local-disk recording storage (host-chosen folder)
 │   │   ├── breakout.js     # Breakout room provisioning (labeled groups)
-│   │   ├── db.js           # SQLite persistence
+│   │   ├── db.js           # Turso/libSQL persistence (async get/all/run/exec wrapper)
 │   │   └── utils.js        # Helpers
 │   ├── test/               # Server unit + integration tests
 │   └── .env                # Environment config
