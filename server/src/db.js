@@ -139,6 +139,18 @@ function initSchema(database) {
       assigned_at INTEGER NOT NULL,
       UNIQUE(main_room, participant_identity)
     );
+
+    -- Password reset tokens (self-hosted admin pattern: no mail infra, so the
+    -- raw token is returned in the API response). Hashed like session tokens so
+    -- a leaked DB row never contains a usable link. Single-use, 30-min TTL.
+    CREATE TABLE IF NOT EXISTS password_resets (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      token_hash TEXT NOT NULL UNIQUE,
+      created_at INTEGER NOT NULL,
+      expires_at INTEGER NOT NULL,
+      FOREIGN KEY (user_id) REFERENCES users(id)
+    );
   `);
 }
 

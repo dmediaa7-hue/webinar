@@ -11,6 +11,13 @@ const COOKIE_NAME = 'webinar_session';
 const JWT_SECRET = process.env.JWT_SECRET || 'webinar-dev-secret-change-me';
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 
+if (JWT_SECRET === 'webinar-dev-secret-change-me') {
+  console.warn(
+    '[AUTH] Using the default JWT_SECRET - session cookies can be forged by anyone ' +
+    'who knows it. Set server/.env JWT_SECRET to a random value before deploying.'
+  );
+}
+
 function hashToken(token) {
   return crypto.createHash('sha256').update(token).digest('hex');
 }
@@ -62,7 +69,14 @@ function verifyCredentials(email, password) {
  * @returns {{cookieValue:string, cookieOptions:object}}
  */
 function createSession(userId) {
-  const token = jwt.sign({ sub: String(userId) }, JWT_SECRET, { expiresIn: '7d' });
+  // jti (random per session) keeps tokens unique: without it, two sessions for
+  // the same user created within the same second share iat and produce byte-
+  // identical JWTs, colliding on sessions.token_hash (SQLITE_CONSTRAINT_UNIQUE).
+  const token = jwt.sign(
+    { sub: String(userId), jti: crypto.randomBytes(16).toString('hex') },
+    JWT_SECRET,
+    { expiresIn: '7d' }
+  );
   const expiresAt = Date.now() + SESSION_TTL_MS;
   db.prepare('INSERT INTO sessions (user_id, token_hash, created_at, expires_at) VALUES (?, ?, ?, ?)')
     .run(userId, hashToken(token), Date.now(), expiresAt);
@@ -133,6 +147,51 @@ function destroySession(cookieValue) {
   }
 }
 
+/**
+ * Request a password reset (self-hosted pattern: no mail infra, so the raw link
+ * token is returned to the caller instead of emailed).
+ * @returns {{ok:true,resetToken:string}|{ok:false,status,error}}
+ */
+function requestPasswordReset(email) {
+  const cleanEmail = String(email || '').trim().toLowerCase();
+  const user = db.prepare('SELECT id FROM users WHERE email = ?').get(cleanEmail);
+  if (!user) return { ok: false, status: 404, error: 'No account found with that email' };
+
+  // Housekeeping: drop this user's already-expired tokens before issuing a
+  // fresh one, so the table never accumulates dead rows.
+  db.prepare('DELETE FROM password_resets WHERE user_id = ? AND expires_at < ?').run(user.id, Date.now());
+
+  const rawToken = crypto.randomBytes(32).toString('hex');
+  const expiresAt = Date.now() + 30 * 60 * 1000; // 30 minute TTL
+  db.prepare('INSERT INTO password_resets (user_id, token_hash, created_at, expires_at) VALUES (?, ?, ?, ?)')
+    .run(user.id, hashToken(rawToken), Date.now(), expiresAt);
+  return { ok: true, resetToken: rawToken };
+}
+
+/**
+ * Apply a password reset token: set a new password, consume the token
+ * (single-use) and revoke every existing session for the user.
+ * @returns {{ok:true}|{ok:false,status,error}}
+ */
+function applyPasswordReset(token, password) {
+  if (typeof password !== 'string' || password.length < 8) {
+    return { ok: false, status: 400, error: 'Password must be at least 8 characters' };
+  }
+  const row = db
+    .prepare('SELECT * FROM password_resets WHERE token_hash = ?')
+    .get(hashToken(String(token || '')));
+  if (!row || row.expires_at < Date.now()) {
+    return { ok: false, status: 400, error: 'This reset link is invalid or has expired' };
+  }
+  const passwordHash = bcrypt.hashSync(password, 10);
+  db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(passwordHash, row.user_id);
+  // Single-use: consume the token so the same link cannot be applied twice.
+  db.prepare('DELETE FROM password_resets WHERE id = ?').run(row.id);
+  // Revoke all sessions so the new password is enforced everywhere at once.
+  db.prepare('DELETE FROM sessions WHERE user_id = ?').run(row.user_id);
+  return { ok: true };
+}
+
 module.exports = {
   COOKIE_NAME,
   registerUser,
@@ -140,5 +199,7 @@ module.exports = {
   createSession,
   destroySession,
   loadUser,
-  requireAuth
+  requireAuth,
+  requestPasswordReset,
+  applyPasswordReset
 };

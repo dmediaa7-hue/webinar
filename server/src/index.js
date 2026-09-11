@@ -189,6 +189,26 @@ app.post('/api/auth/login', (req, res) => {
   res.json({ user });
 });
 
+// Password reset, self-hosted pattern: there is no mail infrastructure, so the
+// reset link is returned in the API response itself. The deployed client is a
+// separate origin (Vite SPA), so the link points at the client (CLIENT_URL),
+// never at the API host.
+app.post('/api/auth/forgot-password', (req, res) => {
+  const { email } = req.body || {};
+  const result = auth.requestPasswordReset(email);
+  if (!result.ok) return res.status(result.status).json({ error: result.error });
+  const CLIENT_BASE = (process.env.CLIENT_URL || (req.protocol + '://' + req.get('host'))).split(',')[0].trim();
+  const resetLink = `${CLIENT_BASE.replace(/\/$/, '')}/reset-password?token=${result.resetToken}`;
+  res.json({ ok: true, resetLink });
+});
+
+app.post('/api/auth/reset-password', (req, res) => {
+  const { token, password } = req.body || {};
+  const result = auth.applyPasswordReset(token, password);
+  if (!result.ok) return res.status(result.status).json({ error: result.error });
+  res.json({ ok: true });
+});
+
 app.post('/api/auth/logout', (req, res) => {
   auth.destroySession(req.cookies && req.cookies[auth.COOKIE_NAME]);
   res.clearCookie(auth.COOKIE_NAME, { path: '/' });

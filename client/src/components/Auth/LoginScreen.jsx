@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { useNavigate, useLocation, Navigate } from 'react-router-dom';
+import { useNavigate, useLocation, Navigate, Link } from 'react-router-dom';
 import useStore from '../../store/useStore';
 import { SERVER_URL } from '../../utils/constants';
 import { Video, Lock, User, Mail, Eye, EyeOff } from 'lucide-react';
@@ -33,6 +33,7 @@ export default function LoginScreen() {
       })
       .catch(() => {});
     return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   if (isLoggedIn) {
@@ -164,6 +165,13 @@ export default function LoginScreen() {
                 {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
               </button>
             </div>
+            {mode === 'login' && (
+              <div className="text-right">
+                <Link to="/forgot-password" className="text-xs text-primary hover:text-primary-light transition-colors">
+                  Forgot password?
+                </Link>
+              </div>
+            )}
           </div>
 
           {mode === 'register' && (
@@ -219,6 +227,10 @@ export default function LoginScreen() {
           Accounts are stored securely with hashed passwords
         </p>
       </div>
+
+      <footer className="px-8 py-4 text-center text-sm text-gray-500">
+        Video meetings/Conferencing for up to unlimited participants | Developed by Arindam Raychoudhury
+      </footer>
     </div>
   );
 }
