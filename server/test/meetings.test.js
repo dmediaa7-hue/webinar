@@ -7,21 +7,22 @@ const { createDatabase, initSchema } = require('../src/db');
 const meetings = require('../src/meetings');
 const rooms = require('../src/rooms');
 
-function newDb() {
+async function newDb() {
   return createDatabase(':memory:');
 }
 
-function insertUser(db, email = 'host@example.com') {
-  const info = db.prepare(
-    'INSERT INTO users (email, name, password_hash, created_at) VALUES (?, ?, ?, ?)'
-  ).run(email, 'Test Host', 'x', Date.now());
+async function insertUser(db, email = 'host@example.com') {
+  const info = await db.run(
+    'INSERT INTO users (email, name, password_hash, created_at) VALUES (?, ?, ?, ?)',
+    email, 'Test Host', 'x', Date.now()
+  );
   return Number(info.lastInsertRowid);
 }
 
-test('scheduled meeting inserts and reads back all fields', () => {
-  const db = newDb();
-  const hostUserId = insertUser(db);
-  const created = meetings.createMeeting({
+test('scheduled meeting inserts and reads back all fields', async () => {
+  const db = await newDb();
+  const hostUserId = await insertUser(db);
+  const created = await meetings.createMeeting({
     hostUserId,
     title: 'Weekly Sync',
     startTime: Date.now() + 60 * 60 * 1000,
@@ -38,7 +39,7 @@ test('scheduled meeting inserts and reads back all fields', () => {
   assert.equal(created.hasPasscode, true);
   assert.equal(created.waitingRoomEnabled, true);
 
-  const read = meetings.getMeeting(created.id, db);
+  const read = await meetings.getMeeting(created.id, db);
   assert.ok(read, 'meeting readable after insert');
   assert.equal(read.title, 'Weekly Sync');
   assert.equal(read.hostUserId, 1);
@@ -46,13 +47,13 @@ test('scheduled meeting inserts and reads back all fields', () => {
   assert.equal(read.waitingRoomEnabled, true);
   assert.equal(read.roomName, 'weekly-sync');
   assert.ok(read.startTime > 0 && read.endTime > read.startTime, 'timestamps persisted');
-  db.close();
+  await db.close();
 });
 
-test('invalid date (end before start) rejected', () => {
-  const db = newDb();
-  assert.throws(
-    () => meetings.createMeeting({
+test('invalid date (end before start) rejected', async () => {
+  const db = await newDb();
+  await assert.rejects(
+    meetings.createMeeting({
       hostUserId: 1,
       title: 'Bad',
       startTime: Date.now() + 60 * 60 * 1000,
@@ -60,13 +61,13 @@ test('invalid date (end before start) rejected', () => {
     }, db),
     /endTime must be after startTime/
   );
-  db.close();
+  await db.close();
 });
 
-test('missing title rejected', () => {
-  const db = newDb();
-  assert.throws(
-    () => meetings.createMeeting({
+test('missing title rejected', async () => {
+  const db = await newDb();
+  await assert.rejects(
+    meetings.createMeeting({
       hostUserId: 1,
       title: '  ',
       startTime: Date.now(),
@@ -74,13 +75,13 @@ test('missing title rejected', () => {
     }, db),
     /title is required/
   );
-  db.close();
+  await db.close();
 });
 
-test('missing hostUserId rejected', () => {
-  const db = newDb();
-  assert.throws(
-    () => meetings.createMeeting({
+test('missing hostUserId rejected', async () => {
+  const db = await newDb();
+  await assert.rejects(
+    meetings.createMeeting({
       hostUserId: 0,
       title: 'No host',
       startTime: Date.now(),
@@ -88,89 +89,89 @@ test('missing hostUserId rejected', () => {
     }, db),
     /hostUserId is required/
   );
-  db.close();
+  await db.close();
 });
 
-test('listMeetings filters by host and upcoming window', () => {
-  const db = newDb();
-  const host1 = insertUser(db, 'one@example.com');
-  const host2 = insertUser(db, 'two@example.com');
+test('listMeetings filters by host and upcoming window', async () => {
+  const db = await newDb();
+  const host1 = await insertUser(db, 'one@example.com');
+  const host2 = await insertUser(db, 'two@example.com');
   const future = Date.now() + 24 * 60 * 60 * 1000;
-  const a = meetings.createMeeting({ hostUserId: host1, title: 'A', startTime: future, endTime: future + 3600 * 1000 }, db);
-  const b = meetings.createMeeting({ hostUserId: host1, title: 'B', startTime: future + 3600 * 1000, endTime: future + 7200 * 1000 }, db);
-  meetings.createMeeting({ hostUserId: host2, title: 'Other user', startTime: future, endTime: future + 3600 * 1000 }, db);
+  const a = await meetings.createMeeting({ hostUserId: host1, title: 'A', startTime: future, endTime: future + 3600 * 1000 }, db);
+  const b = await meetings.createMeeting({ hostUserId: host1, title: 'B', startTime: future + 3600 * 1000, endTime: future + 7200 * 1000 }, db);
+  await meetings.createMeeting({ hostUserId: host2, title: 'Other user', startTime: future, endTime: future + 3600 * 1000 }, db);
 
-  const mine = meetings.listMeetings({ hostUserId: host1 }, db);
+  const mine = await meetings.listMeetings({ hostUserId: host1 }, db);
   assert.equal(mine.length, 2);
   assert.deepEqual(mine.map(m => m.id).sort(), [a.id, b.id].sort());
 
   // fromTime inside b's window but after a's end -> only b qualifies
-  const upcoming = meetings.listMeetings({ hostUserId: host1, fromTime: future + 5400 * 1000 }, db);
+  const upcoming = await meetings.listMeetings({ hostUserId: host1, fromTime: future + 5400 * 1000 }, db);
   assert.equal(upcoming.length, 1);
   assert.equal(upcoming[0].id, b.id);
-  db.close();
+  await db.close();
 });
 
-test('deleteMeeting removes the row', () => {
-  const db = newDb();
-  const hostUserId = insertUser(db);
-  const created = meetings.createMeeting({ hostUserId, title: 'To delete', startTime: Date.now() + 3600 * 1000, endTime: Date.now() + 7200 * 1000 }, db);
-  assert.equal(meetings.deleteMeeting(created.id, db), true);
-  assert.equal(meetings.getMeeting(created.id, db), null);
-  assert.equal(meetings.deleteMeeting('does-not-exist', db), false);
-  db.close();
+test('deleteMeeting removes the row', async () => {
+  const db = await newDb();
+  const hostUserId = await insertUser(db);
+  const created = await meetings.createMeeting({ hostUserId, title: 'To delete', startTime: Date.now() + 3600 * 1000, endTime: Date.now() + 7200 * 1000 }, db);
+  assert.equal(await meetings.deleteMeeting(created.id, db), true);
+  assert.equal(await meetings.getMeeting(created.id, db), null);
+  assert.equal(await meetings.deleteMeeting('does-not-exist', db), false);
+  await db.close();
 });
 
-test('room metadata persists (create -> read back)', () => {
-  const db = newDb();
-  const room = rooms.createRoom('persist-test', 'Host A', 'sock-1', 'pass123', 'Persist Room', db);
+test('room metadata persists (create -> read back)', async () => {
+  const db = await newDb();
+  const room = await rooms.createRoom('persist-test', 'Host A', 'sock-1', 'pass123', 'Persist Room', db);
 
   assert.equal(room.name, 'Persist Room');
   assert.equal(room.hostName, 'Host A');
 
-  const persisted = rooms.getPersistedRoom('persist-test', db);
+  const persisted = await rooms.getPersistedRoom('persist-test', db);
   assert.ok(persisted, 'room metadata row exists');
   assert.equal(persisted.name, 'Persist Room');
   assert.equal(persisted.hostName, 'Host A');
   assert.equal(persisted.hasPassword, true);
   assert.equal(persisted.settings.waitingRoomEnabled, false);
   assert.equal(persisted.settings.isLocked, false);
-  db.close();
+  await db.close();
 });
 
-test('updateRoomSettings persists lock and waiting-room state', () => {
-  const db = newDb();
-  rooms.createRoom('settings-test', 'Host B', 'sock-2', null, 'Settings Room', db);
+test('updateRoomSettings persists lock and waiting-room state', async () => {
+  const db = await newDb();
+  await rooms.createRoom('settings-test', 'Host B', 'sock-2', null, 'Settings Room', db);
 
-  rooms.updateRoomSettings('settings-test', { isLocked: true, waitingRoomEnabled: true }, db);
+  await rooms.updateRoomSettings('settings-test', { isLocked: true, waitingRoomEnabled: true }, db);
 
-  const persisted = rooms.getPersistedRoom('settings-test', db);
+  const persisted = await rooms.getPersistedRoom('settings-test', db);
   assert.equal(persisted.settings.isLocked, true);
   assert.equal(persisted.settings.waitingRoomEnabled, true);
-  db.close();
+  await db.close();
 });
 
-test('removePersistedRoom deletes the metadata row', () => {
-  const db = newDb();
-  rooms.createRoom('cleanup-test', 'Host C', 'sock-3', null, 'Cleanup Room', db);
-  assert.ok(rooms.getPersistedRoom('cleanup-test', db), 'row exists before removal');
+test('removePersistedRoom deletes the metadata row', async () => {
+  const db = await newDb();
+  await rooms.createRoom('cleanup-test', 'Host C', 'sock-3', null, 'Cleanup Room', db);
+  assert.ok(await rooms.getPersistedRoom('cleanup-test', db), 'row exists before removal');
 
-  rooms.removePersistedRoom('cleanup-test', db);
-  assert.equal(rooms.getPersistedRoom('cleanup-test', db), null);
-  db.close();
+  await rooms.removePersistedRoom('cleanup-test', db);
+  assert.equal(await rooms.getPersistedRoom('cleanup-test', db), null);
+  await db.close();
 });
 
-test('schema init is idempotent (re-run safe)', () => {
-  const db = newDb();
-  assert.doesNotThrow(() => initSchema(db));
-  assert.doesNotThrow(() => initSchema(db));
-  db.close();
+test('schema init is idempotent (re-run safe)', async () => {
+  const db = await newDb();
+  await initSchema(db);
+  await initSchema(db);
+  await db.close();
 });
 
-test('createRoomWithHash replicates the scheduled passcode and settings (task 18)', () => {
-  const db = newDb();
-  const hostUserId = insertUser(db);
-  const meeting = meetings.createMeeting({
+test('createRoomWithHash replicates the scheduled passcode and settings (task 18)', async () => {
+  const db = await newDb();
+  const hostUserId = await insertUser(db);
+  const meeting = await meetings.createMeeting({
     hostUserId,
     title: 'Scheduled Room',
     startTime: Date.now() + 3600 * 1000,
@@ -178,9 +179,9 @@ test('createRoomWithHash replicates the scheduled passcode and settings (task 18
     passcode: '4242',
     waitingRoomEnabled: true
   }, db);
-  const row = meetings.getMeetingRow(meeting.id, db);
+  const row = await meetings.getMeetingRow(meeting.id, db);
 
-  const live = rooms.createRoomWithHash(meeting.id, {
+  const live = await rooms.createRoomWithHash(meeting.id, {
     hostName: 'Host',
     roomName: meeting.title,
     passwordHash: row.passcode_hash,
@@ -191,31 +192,31 @@ test('createRoomWithHash replicates the scheduled passcode and settings (task 18
   assert.equal(rooms.roomHasPassword(live), true, 'room is passcode-protected');
   assert.equal(rooms.verifyPassword(live, '4242'), true, 'original passcode still validates');
   assert.equal(rooms.verifyPassword(live, 'wrong'), false, 'wrong passcode rejected');
-  db.close();
+  await db.close();
 });
 
-test('meetings persist across database reopen (file-backed)', () => {
+test('meetings persist across database reopen (file-backed)', async () => {
   const os = require('os');
   const path = require('path');
   const fs = require('fs');
   const dbPath = path.join(os.tmpdir(), `webinar-task3-${Date.now()}.db`);
 
   try {
-    const first = createDatabase(dbPath);
-    const hostUserId = insertUser(first, 'persist@example.com');
-    const created = meetings.createMeeting({
+    const first = await createDatabase(dbPath);
+    const hostUserId = await insertUser(first, 'persist@example.com');
+    const created = await meetings.createMeeting({
       hostUserId,
       title: 'Persists',
       startTime: Date.now() + 60 * 60 * 1000,
       endTime: Date.now() + 2 * 60 * 60 * 1000
     }, first);
-    first.close();
+    await first.close();
 
-    const second = createDatabase(dbPath);
-    const read = meetings.getMeeting(created.id, second);
+    const second = await createDatabase(dbPath);
+    const read = await meetings.getMeeting(created.id, second);
     assert.ok(read, 'meeting readable after database reopen');
     assert.equal(read.title, 'Persists');
-    second.close();
+    await second.close();
   } finally {
     try { fs.unlinkSync(dbPath); } catch (e) { /* ignore */ }
     try { fs.unlinkSync(dbPath + '-wal'); } catch (e) { /* ignore */ }

@@ -26,7 +26,7 @@ function hashToken(token) {
  * Register a new user.
  * @returns {{ok:true,user}|{ok:false,status,error}}
  */
-function registerUser({ email, name, password }) {
+async function registerUser({ email, name, password }) {
   const cleanEmail = String(email || '').trim().toLowerCase();
   const cleanName = String(name || '').trim().slice(0, 100);
   if (!cleanEmail || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(cleanEmail)) {
@@ -38,9 +38,10 @@ function registerUser({ email, name, password }) {
 
   const passwordHash = bcrypt.hashSync(password, 10);
   try {
-    const info = db
-      .prepare('INSERT INTO users (email, name, password_hash, created_at) VALUES (?, ?, ?, ?)')
-      .run(cleanEmail, cleanName, passwordHash, Date.now());
+    const info = await db.run(
+      'INSERT INTO users (email, name, password_hash, created_at) VALUES (?, ?, ?, ?)',
+      cleanEmail, cleanName, passwordHash, Date.now()
+    );
     return {
       ok: true,
       user: { id: info.lastInsertRowid, email: cleanEmail, name: cleanName }
@@ -56,9 +57,9 @@ function registerUser({ email, name, password }) {
 /**
  * Verify credentials and create a session; returns user.
  */
-function verifyCredentials(email, password) {
+async function verifyCredentials(email, password) {
   const cleanEmail = String(email || '').trim().toLowerCase();
-  const row = db.prepare('SELECT * FROM users WHERE email = ?').get(cleanEmail);
+  const row = await db.get('SELECT * FROM users WHERE email = ?', cleanEmail);
   if (!row) return null;
   if (!bcrypt.compareSync(String(password || ''), row.password_hash)) return null;
   return { id: row.id, email: row.email, name: row.name };
@@ -68,7 +69,7 @@ function verifyCredentials(email, password) {
  * Create a signed httpOnly cookie value for a user, persist token hash.
  * @returns {{cookieValue:string, cookieOptions:object}}
  */
-function createSession(userId) {
+async function createSession(userId) {
   // jti (random per session) keeps tokens unique: without it, two sessions for
   // the same user created within the same second share iat and produce byte-
   // identical JWTs, colliding on sessions.token_hash (SQLITE_CONSTRAINT_UNIQUE).
@@ -78,8 +79,10 @@ function createSession(userId) {
     { expiresIn: '7d' }
   );
   const expiresAt = Date.now() + SESSION_TTL_MS;
-  db.prepare('INSERT INTO sessions (user_id, token_hash, created_at, expires_at) VALUES (?, ?, ?, ?)')
-    .run(userId, hashToken(token), Date.now(), expiresAt);
+  await db.run(
+    'INSERT INTO sessions (user_id, token_hash, created_at, expires_at) VALUES (?, ?, ?, ?)',
+    userId, hashToken(token), Date.now(), expiresAt
+  );
   return {
     cookieValue: token,
     cookieOptions: {
@@ -101,7 +104,7 @@ function createSession(userId) {
  * Middleware: resolve the current user from the session cookie (if any) and
  * attach `req.user`. Does not reject — callers decide.
  */
-function loadUser(req, res, next) {
+async function loadUser(req, res, next) {
   const token = req.cookies && req.cookies[COOKIE_NAME];
   if (!token) {
     req.user = null;
@@ -114,14 +117,15 @@ function loadUser(req, res, next) {
     req.user = null;
     return next();
   }
-  const session = db
-    .prepare('SELECT * FROM sessions WHERE token_hash = ? AND expires_at > ?')
-    .get(hashToken(token), Date.now());
+  const session = await db.get(
+    'SELECT * FROM sessions WHERE token_hash = ? AND expires_at > ?',
+    hashToken(token), Date.now()
+  );
   if (!session) {
     req.user = null;
     return next();
   }
-  const user = db.prepare('SELECT id, email, name FROM users WHERE id = ?').get(payload.sub);
+  const user = await db.get('SELECT id, email, name FROM users WHERE id = ?', payload.sub);
   req.user = user || null;
   return next();
 }
@@ -129,21 +133,25 @@ function loadUser(req, res, next) {
 /**
  * Middleware: require an authenticated user (401 otherwise).
  */
-function requireAuth(req, res, next) {
-  loadUser(req, res, () => {
-    if (!req.user) {
-      return res.status(401).json({ error: 'Unauthorized' });
-    }
-    return next();
-  });
+async function requireAuth(req, res, next) {
+  try {
+    await loadUser(req, res, () => {
+      if (!req.user) {
+        return res.status(401).json({ error: 'Unauthorized' });
+      }
+      return next();
+    });
+  } catch (err) {
+    return next(err);
+  }
 }
 
 /**
  * Destroy a session (logout).
  */
-function destroySession(cookieValue) {
+async function destroySession(cookieValue) {
   if (cookieValue) {
-    db.prepare('DELETE FROM sessions WHERE token_hash = ?').run(hashToken(cookieValue));
+    await db.run('DELETE FROM sessions WHERE token_hash = ?', hashToken(cookieValue));
   }
 }
 
@@ -152,19 +160,21 @@ function destroySession(cookieValue) {
  * token is returned to the caller instead of emailed).
  * @returns {{ok:true,resetToken:string}|{ok:false,status,error}}
  */
-function requestPasswordReset(email) {
+async function requestPasswordReset(email) {
   const cleanEmail = String(email || '').trim().toLowerCase();
-  const user = db.prepare('SELECT id FROM users WHERE email = ?').get(cleanEmail);
+  const user = await db.get('SELECT id FROM users WHERE email = ?', cleanEmail);
   if (!user) return { ok: false, status: 404, error: 'No account found with that email' };
 
   // Housekeeping: drop this user's already-expired tokens before issuing a
   // fresh one, so the table never accumulates dead rows.
-  db.prepare('DELETE FROM password_resets WHERE user_id = ? AND expires_at < ?').run(user.id, Date.now());
+  await db.run('DELETE FROM password_resets WHERE user_id = ? AND expires_at < ?', user.id, Date.now());
 
   const rawToken = crypto.randomBytes(32).toString('hex');
   const expiresAt = Date.now() + 30 * 60 * 1000; // 30 minute TTL
-  db.prepare('INSERT INTO password_resets (user_id, token_hash, created_at, expires_at) VALUES (?, ?, ?, ?)')
-    .run(user.id, hashToken(rawToken), Date.now(), expiresAt);
+  await db.run(
+    'INSERT INTO password_resets (user_id, token_hash, created_at, expires_at) VALUES (?, ?, ?, ?)',
+    user.id, hashToken(rawToken), Date.now(), expiresAt
+  );
   return { ok: true, resetToken: rawToken };
 }
 
@@ -173,22 +183,23 @@ function requestPasswordReset(email) {
  * (single-use) and revoke every existing session for the user.
  * @returns {{ok:true}|{ok:false,status,error}}
  */
-function applyPasswordReset(token, password) {
+async function applyPasswordReset(token, password) {
   if (typeof password !== 'string' || password.length < 8) {
     return { ok: false, status: 400, error: 'Password must be at least 8 characters' };
   }
-  const row = db
-    .prepare('SELECT * FROM password_resets WHERE token_hash = ?')
-    .get(hashToken(String(token || '')));
+  const row = await db.get(
+    'SELECT * FROM password_resets WHERE token_hash = ?',
+    hashToken(String(token || ''))
+  );
   if (!row || row.expires_at < Date.now()) {
     return { ok: false, status: 400, error: 'This reset link is invalid or has expired' };
   }
   const passwordHash = bcrypt.hashSync(password, 10);
-  db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(passwordHash, row.user_id);
+  await db.run('UPDATE users SET password_hash = ? WHERE id = ?', passwordHash, row.user_id);
   // Single-use: consume the token so the same link cannot be applied twice.
-  db.prepare('DELETE FROM password_resets WHERE id = ?').run(row.id);
+  await db.run('DELETE FROM password_resets WHERE id = ?', row.id);
   // Revoke all sessions so the new password is enforced everywhere at once.
-  db.prepare('DELETE FROM sessions WHERE user_id = ?').run(row.user_id);
+  await db.run('DELETE FROM sessions WHERE user_id = ?', row.user_id);
   return { ok: true };
 }
 

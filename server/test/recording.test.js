@@ -14,23 +14,23 @@ const { createDatabase } = require('../src/db');
 const rooms = require('../src/rooms');
 const recording = require('../src/recording');
 
-function newDb() {
+async function newDb() {
   return createDatabase(':memory:');
 }
 
-function makeRoom(roomId, db) {
+async function makeRoom(roomId, db) {
   return rooms.createRoom(roomId, 'Host', 'sock-1', null, 'Record Room', db);
 }
 
-test('saveRecording writes the file, inserts a completed row, and returns id+path', () => {
-  const db = newDb();
+test('saveRecording writes the file, inserts a completed row, and returns id+path', async () => {
+  const db = await newDb();
   const roomId = 'room-save-1';
-  makeRoom(roomId, db);
+  await makeRoom(roomId, db);
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rec-test-'));
   const filename = 'test.webm';
 
   try {
-    const result = recording.saveRecording({
+    const result = await recording.saveRecording({
       roomName: 'Record Room',
       folder: dir,
       filename,
@@ -42,23 +42,23 @@ test('saveRecording writes the file, inserts a completed row, and returns id+pat
     assert.equal(fs.existsSync(result.path), true, 'file exists on disk');
     assert.deepEqual(fs.readFileSync(result.path), Buffer.from('fake-webm'), 'bytes round-trip');
 
-    const row = db.prepare('SELECT * FROM recordings WHERE room_name = ?').get('Record Room');
+    const row = await db.get('SELECT * FROM recordings WHERE room_name = ?', 'Record Room');
     assert.ok(row, 'recording row inserted');
     assert.equal(row.status, 'completed');
     assert.equal(row.url, result.path);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
-    db.close();
+    await db.close();
   }
 });
 
-test('saveRecording creates nested folders recursively', () => {
-  const db = newDb();
-  makeRoom('room-nested-1', db);
+test('saveRecording creates nested folders recursively', async () => {
+  const db = await newDb();
+  await makeRoom('room-nested-1', db);
   const dir = path.join(os.tmpdir(), `rec-nested-${Date.now()}`, 'sub', 'dir');
 
   try {
-    const result = recording.saveRecording({
+    const result = await recording.saveRecording({
       roomName: 'Record Room',
       folder: dir,
       filename: 'clip.webm',
@@ -67,20 +67,23 @@ test('saveRecording creates nested folders recursively', () => {
     assert.equal(fs.existsSync(result.path), true, 'nested file exists');
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
-    db.close();
+    await db.close();
   }
 });
 
-test('saveRecording rejects an invalid filename', () => {
-  const db = newDb();
-  makeRoom('room-badname-1', db);
-  assert.throws(() => recording.saveRecording({
-    roomName: 'Record Room',
-    folder: os.tmpdir(),
-    filename: '../../evil.webm',
-    base64Data: 'x'
-  }, db), /Invalid filename/);
-  db.close();
+test('saveRecording rejects an invalid filename', async () => {
+  const db = await newDb();
+  await makeRoom('room-badname-1', db);
+  await assert.rejects(
+    recording.saveRecording({
+      roomName: 'Record Room',
+      folder: os.tmpdir(),
+      filename: '../../evil.webm',
+      base64Data: 'x'
+    }, db),
+    /Invalid filename/
+  );
+  await db.close();
 });
 
 // --- Self-harnessed REST upload flow ---

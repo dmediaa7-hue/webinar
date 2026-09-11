@@ -14,13 +14,13 @@ const { createDatabase } = require('../src/db');
 const rooms = require('../src/rooms');
 const breakout = require('../src/breakout');
 
-function newDb() {
+async function newDb() {
   return createDatabase(':memory:');
 }
 
 /** Create a room with a host + optional guest participant in the registry. */
-function makeRoom(roomId, db, withGuest = false) {
-  const room = rooms.createRoom(roomId, 'Host', 'sock-host', null, null, db);
+async function makeRoom(roomId, db, withGuest = false) {
+  const room = await rooms.createRoom(roomId, 'Host', 'sock-host', null, null, db);
   if (withGuest) {
     rooms.joinRoom(roomId, { socketId: 'sock-guest', displayName: 'Guest', isHost: false });
   }
@@ -39,24 +39,24 @@ test('cleanBreakoutName trims, caps length, and rejects invalid characters', () 
 });
 
 test('nextBreakoutName auto-numbers past existing breakouts', async () => {
-  const db = newDb();
+  const db = await newDb();
   const roomId = 'room-next-1';
-  makeRoom(roomId, db);
+  await makeRoom(roomId, db);
 
-  assert.equal(breakout.nextBreakoutName(roomId, [], db), '1');
+  assert.equal(await breakout.nextBreakoutName(roomId, [], db), '1');
   await breakout.createBreakout(roomId, '1', 'sock-host', db);
-  assert.equal(breakout.nextBreakoutName(roomId, [], db), '2');
+  assert.equal(await breakout.nextBreakoutName(roomId, [], db), '2');
   await breakout.createBreakout(roomId, '2', 'sock-host', db);
-  assert.equal(breakout.nextBreakoutName(roomId, [], db), '3');
-  db.close();
+  assert.equal(await breakout.nextBreakoutName(roomId, [], db), '3');
+  await db.close();
 });
 
 // --- Creation ---
 
 test('createBreakout persists a group row and returns the breakout', async () => {
-  const db = newDb();
+  const db = await newDb();
   const roomId = 'room-prov-1';
-  makeRoom(roomId, db);
+  await makeRoom(roomId, db);
 
   const result = await breakout.createBreakout(roomId, '1', 'sock-host', db);
 
@@ -65,44 +65,44 @@ test('createBreakout persists a group row and returns the breakout', async () =>
   assert.equal(result.breakout.createdBy, 'sock-host');
   assert.ok(result.breakout.createdAt > 0, 'createdAt persisted');
 
-  const row = db.prepare('SELECT * FROM breakout_rooms WHERE main_room = ? AND breakout_name = ?').get(roomId, '1');
+  const row = await db.get('SELECT * FROM breakout_rooms WHERE main_room = ? AND breakout_name = ?', roomId, '1');
   assert.ok(row, 'breakout row inserted');
   assert.equal(row.created_by, 'sock-host');
-  db.close();
+  await db.close();
 });
 
 test('duplicate breakout name is rejected with DUPLICATE_BREAKOUT', async () => {
-  const db = newDb();
+  const db = await newDb();
   const roomId = 'room-dup-1';
-  makeRoom(roomId, db);
+  await makeRoom(roomId, db);
 
   await breakout.createBreakout(roomId, '1', 'sock-host', db);
   const second = await breakout.createBreakout(roomId, '1', 'sock-host', db);
 
   assert.equal(second.error, `Breakout '1' already exists`);
   assert.equal(second.code, 'DUPLICATE_BREAKOUT');
-  db.close();
+  await db.close();
 });
 
 test('unnamed createBreakout auto-numbers to the next free label', async () => {
-  const db = newDb();
+  const db = await newDb();
   const roomId = 'room-auto-1';
-  makeRoom(roomId, db);
+  await makeRoom(roomId, db);
 
   const first = await breakout.createBreakout(roomId, null, 'sock-host', db);
   assert.equal(first.breakout.name, '1');
 
   const second = await breakout.createBreakout(roomId, null, 'sock-host', db);
   assert.equal(second.breakout.name, '2');
-  db.close();
+  await db.close();
 });
 
 // --- Assignment (no media-room move) ---
 
 test('assignParticipant upserts an assignment row', async () => {
-  const db = newDb();
+  const db = await newDb();
   const roomId = 'room-assign-1';
-  makeRoom(roomId, db, true);
+  await makeRoom(roomId, db, true);
 
   await breakout.createBreakout(roomId, '1', 'sock-host', db);
   const result = await breakout.assignParticipant(roomId, 'sock-guest', '1', db);
@@ -111,18 +111,19 @@ test('assignParticipant upserts an assignment row', async () => {
   assert.equal(result.identity, 'sock-guest');
   assert.equal(result.roomId, roomId);
 
-  const assignment = db.prepare(
-    'SELECT * FROM breakout_assignments WHERE main_room = ? AND participant_identity = ?'
-  ).get(roomId, 'sock-guest');
+  const assignment = await db.get(
+    'SELECT * FROM breakout_assignments WHERE main_room = ? AND participant_identity = ?',
+    roomId, 'sock-guest'
+  );
   assert.ok(assignment, 'assignment row persisted');
   assert.equal(assignment.breakout_name, '1');
-  db.close();
+  await db.close();
 });
 
 test('re-assigning a participant moves their row to the new group', async () => {
-  const db = newDb();
+  const db = await newDb();
   const roomId = 'room-reassign-1';
-  makeRoom(roomId, db, true);
+  await makeRoom(roomId, db, true);
   await breakout.createBreakout(roomId, '1', 'sock-host', db);
   await breakout.createBreakout(roomId, '2', 'sock-host', db);
   await breakout.assignParticipant(roomId, 'sock-guest', '1', db);
@@ -130,40 +131,41 @@ test('re-assigning a participant moves their row to the new group', async () => 
   const result = await breakout.assignParticipant(roomId, 'sock-guest', '2', db);
   assert.equal(result.ok, true);
 
-  const assignment = db.prepare(
-    'SELECT * FROM breakout_assignments WHERE main_room = ? AND participant_identity = ?'
-  ).get(roomId, 'sock-guest');
+  const assignment = await db.get(
+    'SELECT * FROM breakout_assignments WHERE main_room = ? AND participant_identity = ?',
+    roomId, 'sock-guest'
+  );
   assert.equal(assignment.breakout_name, '2', 'assignment moved to group 2');
-  db.close();
+  await db.close();
 });
 
 test('assignParticipant rejects a breakout that does not exist', async () => {
-  const db = newDb();
+  const db = await newDb();
   const roomId = 'room-missing-1';
-  makeRoom(roomId, db, true);
+  await makeRoom(roomId, db, true);
 
   const result = await breakout.assignParticipant(roomId, 'sock-guest', '9', db);
   assert.equal(result.code, 'BREAKOUT_NOT_FOUND');
-  db.close();
+  await db.close();
 });
 
 test('assignParticipant rejects a participant not in the room roster', async () => {
-  const db = newDb();
+  const db = await newDb();
   const roomId = 'room-noone-1';
-  makeRoom(roomId, db, false);
+  await makeRoom(roomId, db, false);
   await breakout.createBreakout(roomId, '1', 'sock-host', db);
 
   const result = await breakout.assignParticipant(roomId, 'stranger', '1', db);
   assert.equal(result.code, 'PARTICIPANT_NOT_FOUND');
-  db.close();
+  await db.close();
 });
 
 // --- Return to main ---
 
 test('returnParticipant deletes the assignment row', async () => {
-  const db = newDb();
+  const db = await newDb();
   const roomId = 'room-return-1';
-  makeRoom(roomId, db, true);
+  await makeRoom(roomId, db, true);
   await breakout.createBreakout(roomId, '1', 'sock-host', db);
   await breakout.assignParticipant(roomId, 'sock-guest', '1', db);
 
@@ -171,30 +173,31 @@ test('returnParticipant deletes the assignment row', async () => {
   assert.equal(result.ok, true);
   assert.equal(result.alreadyInMain, undefined);
 
-  const assignment = db.prepare(
-    'SELECT * FROM breakout_assignments WHERE main_room = ? AND participant_identity = ?'
-  ).get(roomId, 'sock-guest');
+  const assignment = await db.get(
+    'SELECT * FROM breakout_assignments WHERE main_room = ? AND participant_identity = ?',
+    roomId, 'sock-guest'
+  );
   assert.equal(assignment, undefined, 'assignment row removed');
-  db.close();
+  await db.close();
 });
 
 test('returnParticipant for an unassigned participant is a no-op', async () => {
-  const db = newDb();
+  const db = await newDb();
   const roomId = 'room-noret-1';
-  makeRoom(roomId, db, true);
+  await makeRoom(roomId, db, true);
 
   const result = await breakout.returnParticipant(roomId, 'sock-guest', db);
   assert.equal(result.ok, true);
   assert.equal(result.alreadyInMain, true);
-  db.close();
+  await db.close();
 });
 
 // --- Teardown ---
 
 test('teardownBreakouts clears assignments and breakout rows', async () => {
-  const db = newDb();
+  const db = await newDb();
   const roomId = 'room-teardown-1';
-  makeRoom(roomId, db, true);
+  await makeRoom(roomId, db, true);
   await breakout.createBreakout(roomId, '1', 'sock-host', db);
   await breakout.createBreakout(roomId, '2', 'sock-host', db);
   await breakout.assignParticipant(roomId, 'sock-guest', '2', db);
@@ -204,27 +207,27 @@ test('teardownBreakouts clears assignments and breakout rows', async () => {
   assert.equal(result.ok, true);
   assert.equal(result.removed, 2);
 
-  const rows = db.prepare('SELECT * FROM breakout_rooms WHERE main_room = ?').all(roomId);
+  const rows = await db.all('SELECT * FROM breakout_rooms WHERE main_room = ?', roomId);
   assert.equal(rows.length, 0, 'breakout rows cleared');
-  const assignments = db.prepare('SELECT * FROM breakout_assignments WHERE main_room = ?').all(roomId);
+  const assignments = await db.all('SELECT * FROM breakout_assignments WHERE main_room = ?', roomId);
   assert.equal(assignments.length, 0, 'assignments cleared');
-  db.close();
+  await db.close();
 });
 
 test('listBreakouts returns breakout state with identities', async () => {
-  const db = newDb();
+  const db = await newDb();
   const roomId = 'room-list-1';
-  makeRoom(roomId, db, true);
+  await makeRoom(roomId, db, true);
   await breakout.createBreakout(roomId, '1', 'sock-host', db);
   await breakout.assignParticipant(roomId, 'sock-guest', '1', db);
 
-  const state = breakout.listBreakouts(roomId, db);
+  const state = await breakout.listBreakouts(roomId, db);
   assert.equal(state.mainRoom, roomId);
   assert.equal(state.breakouts.length, 1);
   assert.equal(state.breakouts[0].name, '1');
   assert.deepEqual(state.breakouts[0].identities, ['sock-guest']);
   assert.equal(state.assignments[0].breakoutName, '1');
-  db.close();
+  await db.close();
 });
 
 // --- Host-only REST gate (self-harnessed, like host-controls.test.js) ---
@@ -348,7 +351,7 @@ test('breakout endpoints reject non-host callers with 403; host actions succeed'
 
     const hostTeardown = await fetch(`${SERVER_URL}/api/rooms/${roomId}/breakouts/teardown`, {
       method: 'POST',
-      headers: { 'x-host-id': host.id }
+      headers: { 'Content-Type': 'application/json', 'x-host-id': host.id }
     });
     assert.equal(hostTeardown.status, 200, 'host teardown -> 200');
   } finally {

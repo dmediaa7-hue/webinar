@@ -68,22 +68,22 @@ function rowToMeeting(row) {
  * @param {object} [db] optional better-sqlite3 handle (defaults to the shared one)
  * @returns {object} the persisted meeting row
  */
-function createMeeting(input, db = defaultDb) {
+async function createMeeting(input, db = defaultDb) {
   const data = validateMeetingInput(input);
   const id = uuidv4();
-  db.prepare(`
+  await db.run(`
     INSERT INTO scheduled_meetings
       (id, host_user_id, title, start_time, end_time, room_name, passcode_hash, waiting_room_enabled, created_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(id, data.hostUserId, data.title, data.startTime, data.endTime, data.roomName, data.passcodeHash, data.waitingRoomEnabled ? 1 : 0, data.createdAt);
-  return getMeeting(id, db);
+  `, id, data.hostUserId, data.title, data.startTime, data.endTime, data.roomName, data.passcodeHash, data.waitingRoomEnabled ? 1 : 0, data.createdAt);
+  return await getMeeting(id, db);
 }
 
 /**
  * Fetch a single scheduled meeting by id.
  */
-function getMeeting(id, db = defaultDb) {
-  const row = db.prepare('SELECT * FROM scheduled_meetings WHERE id = ?').get(id);
+async function getMeeting(id, db = defaultDb) {
+  const row = await db.get('SELECT * FROM scheduled_meetings WHERE id = ?', id);
   return rowToMeeting(row);
 }
 
@@ -92,15 +92,15 @@ function getMeeting(id, db = defaultDb) {
  * "start meeting" flow to replicate the passcode onto the live room; never
  * serialized to API responses (getMeeting stays hash-free).
  */
-function getMeetingRow(id, db = defaultDb) {
-  return db.prepare('SELECT * FROM scheduled_meetings WHERE id = ?').get(id);
+async function getMeetingRow(id, db = defaultDb) {
+  return await db.get('SELECT * FROM scheduled_meetings WHERE id = ?', id);
 }
 
 /**
  * List scheduled meetings, optionally filtered by host and/or a "from" time.
  * @param {object} [filters] { hostUserId?, fromTime? }
  */
-function listMeetings(filters = {}, db = defaultDb) {
+async function listMeetings(filters = {}, db = defaultDb) {
   const clauses = [];
   const params = [];
   if (filters.hostUserId) {
@@ -112,15 +112,15 @@ function listMeetings(filters = {}, db = defaultDb) {
     params.push(Math.floor(Number(filters.fromTime) || 0));
   }
   const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
-  const rows = db.prepare(`SELECT * FROM scheduled_meetings ${where} ORDER BY start_time ASC`).all(...params);
+  const rows = await db.all(`SELECT * FROM scheduled_meetings ${where} ORDER BY start_time ASC`, ...params);
   return rows.map(rowToMeeting);
 }
 
 /**
  * Delete a scheduled meeting by id. Returns true if a row was removed.
  */
-function deleteMeeting(id, db = defaultDb) {
-  const result = db.prepare('DELETE FROM scheduled_meetings WHERE id = ?').run(id);
+async function deleteMeeting(id, db = defaultDb) {
+  const result = await db.run('DELETE FROM scheduled_meetings WHERE id = ?', id);
   return result.changes > 0;
 }
 

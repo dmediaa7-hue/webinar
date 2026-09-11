@@ -5,8 +5,8 @@ const defaultDb = require('./db');
 const rooms = new Map();
 
 /** Upsert a room's metadata row into SQLite. */
-function persistRoomMetadata(room, db = defaultDb) {
-  db.prepare(`
+async function persistRoomMetadata(room, db = defaultDb) {
+  await db.run(`
     INSERT INTO rooms (id, name, host_id, host_name, passcode_hash, waiting_room_enabled, is_locked, created_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
@@ -16,7 +16,7 @@ function persistRoomMetadata(room, db = defaultDb) {
       passcode_hash = excluded.passcode_hash,
       waiting_room_enabled = excluded.waiting_room_enabled,
       is_locked = excluded.is_locked
-  `).run(
+  `,
     room.id,
     room.name,
     room.hostId || null,
@@ -29,13 +29,13 @@ function persistRoomMetadata(room, db = defaultDb) {
 }
 
 /** Delete a room's persisted metadata row on cleanup. */
-function removePersistedRoom(roomId, db = defaultDb) {
-  db.prepare('DELETE FROM rooms WHERE id = ?').run(roomId);
+async function removePersistedRoom(roomId, db = defaultDb) {
+  await db.run('DELETE FROM rooms WHERE id = ?', roomId);
 }
 
 /** Read persisted room metadata (id, name, hostName, hasPassword, settings). */
-function getPersistedRoom(roomId, db = defaultDb) {
-  const row = db.prepare('SELECT * FROM rooms WHERE id = ?').get(roomId);
+async function getPersistedRoom(roomId, db = defaultDb) {
+  const row = await db.get('SELECT * FROM rooms WHERE id = ?', roomId);
   if (!row) return null;
   return {
     id: row.id,
@@ -60,7 +60,7 @@ function getPersistedRoom(roomId, db = defaultDb) {
  * @param {object} [db] - optional better-sqlite3 handle (defaults to shared one)
  * @returns {object} Room object
  */
-function createRoom(roomId, hostName = 'Host', hostSocketId = null, password = null, roomName = null, db = defaultDb) {
+async function createRoom(roomId, hostName = 'Host', hostSocketId = null, password = null, roomName = null, db = defaultDb) {
   const room = {
     id: roomId,
     name: roomName || hostName + "'s Meeting",
@@ -103,7 +103,7 @@ function createRoom(roomId, hostName = 'Host', hostSocketId = null, password = n
   }
 
   rooms.set(roomId, room);
-  persistRoomMetadata(room, db);
+  await persistRoomMetadata(room, db);
   return room;
 }
 
@@ -113,7 +113,7 @@ function createRoom(roomId, hostName = 'Host', hostSocketId = null, password = n
  * re-hashing, and the waiting-room toggle carries over. No host socket yet -
  * the first arrival becomes host through the normal join-room path.
  */
-function createRoomWithHash(roomId, { hostName = 'Host', hostSocketId = null, passwordHash = null, roomName = null, waitingRoomEnabled = false, isLocked = false, db = defaultDb } = {}) {
+async function createRoomWithHash(roomId, { hostName = 'Host', hostSocketId = null, passwordHash = null, roomName = null, waitingRoomEnabled = false, isLocked = false, db = defaultDb } = {}) {
   const room = {
     id: roomId,
     name: roomName || hostName + "'s Meeting",
@@ -155,16 +155,16 @@ function createRoomWithHash(roomId, { hostName = 'Host', hostSocketId = null, pa
   }
 
   rooms.set(roomId, room);
-  persistRoomMetadata(room, db);
+  await persistRoomMetadata(room, db);
   return room;
 }
 
 /** Merge settings changes into a room and persist the metadata. */
-function updateRoomSettings(roomId, patch, db = defaultDb) {
+async function updateRoomSettings(roomId, patch, db = defaultDb) {
   const room = rooms.get(roomId);
   if (!room) return null;
   Object.assign(room.settings, patch);
-  persistRoomMetadata(room, db);
+  await persistRoomMetadata(room, db);
   return room.settings;
 }
 
@@ -278,11 +278,11 @@ function leaveRoom(roomId, socketId) {
 
   // Clean up empty rooms after 5 minutes
   if (room.participants.size === 0) {
-    setTimeout(() => {
+    setTimeout(async () => {
       const r = rooms.get(roomId);
       if (r && r.participants.size === 0) {
         rooms.delete(roomId);
-        removePersistedRoom(roomId);
+        await removePersistedRoom(roomId);
         console.log(`[🗑] Room ${roomId} cleaned up (empty)`);
       }
     }, 300000);

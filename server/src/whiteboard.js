@@ -9,25 +9,31 @@ const defaultDb = require('./db');
  * whiteboard per room). Elements is the Excalidraw elements array.
  * Returns {ok:true} or {ok:false,error}.
  */
-function saveScene(roomName, elements, db = defaultDb) {
+async function saveScene(roomName, elements, db = defaultDb) {
   const cleanRoom = String(roomName ?? '').trim().slice(0, 100);
   if (!cleanRoom) return { ok: false, error: 'ROOM_REQUIRED' };
   if (!Array.isArray(elements)) return { ok: false, error: 'ELEMENTS_REQUIRED' };
 
-  db.prepare(`
+  await db.run(
+    `
     INSERT INTO whiteboards (id, room_name, scene_json, updated_at)
     VALUES (?, ?, ?, ?)
     ON CONFLICT(id)
     DO UPDATE SET scene_json = excluded.scene_json, updated_at = excluded.updated_at
-  `).run(cleanRoom, cleanRoom, JSON.stringify(elements), Date.now());
+  `,
+    cleanRoom,
+    cleanRoom,
+    JSON.stringify(elements),
+    Date.now()
+  );
   return { ok: true };
 }
 
 /**
  * Load the last persisted scene for a room, or null when none exists yet.
  */
-function getScene(roomName, db = defaultDb) {
-  const row = db.prepare('SELECT scene_json FROM whiteboards WHERE id = ?').get(String(roomName ?? '').trim());
+async function getScene(roomName, db = defaultDb) {
+  const row = await db.get('SELECT scene_json FROM whiteboards WHERE id = ?', String(roomName ?? '').trim());
   if (!row) return null;
   try {
     const parsed = JSON.parse(row.scene_json);

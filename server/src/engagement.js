@@ -53,7 +53,7 @@ function questionRowToQuestion(row) {
 /**
  * Create a poll. Returns {ok:true,poll} or {ok:false,error}.
  */
-function createPoll({ roomName, question, options, hostIdentity }, db = defaultDb) {
+async function createPoll({ roomName, question, options, hostIdentity }, db = defaultDb) {
   const cleanRoom = String(roomName ?? '').trim().slice(0, 100);
   const cleanQuestion = String(question ?? '').trim().slice(0, MAX_QUESTION_LENGTH);
   const cleanHost = String(hostIdentity ?? '').trim().slice(0, MAX_NAME_LENGTH);
@@ -64,19 +64,27 @@ function createPoll({ roomName, question, options, hostIdentity }, db = defaultD
   if (!cleanHost) return { ok: false, error: 'HOST_REQUIRED' };
 
   const id = uuidv4();
-  db.prepare(`
+  await db.run(
+    `
     INSERT INTO polls (id, room_name, question, options, host_identity, created_at)
     VALUES (?, ?, ?, ?, ?, ?)
-  `).run(id, cleanRoom, cleanQuestion, JSON.stringify(cleanOpts), cleanHost, Date.now());
-  return { ok: true, poll: getPoll(id, db) };
+  `,
+    id,
+    cleanRoom,
+    cleanQuestion,
+    JSON.stringify(cleanOpts),
+    cleanHost,
+    Date.now()
+  );
+  return { ok: true, poll: await getPoll(id, db) };
 }
 
 /**
  * Record/replace a participant's choice for a poll. One active vote per voter
  * (UNIQUE(poll_id, voter_identity)); re-voting replaces the previous choice.
  */
-function recordPollVote({ pollId, voterIdentity, optionIndex }, db = defaultDb) {
-  const poll = getPoll(pollId, db);
+async function recordPollVote({ pollId, voterIdentity, optionIndex }, db = defaultDb) {
+  const poll = await getPoll(pollId, db);
   if (!poll) return { ok: false, error: 'POLL_NOT_FOUND' };
   const idx = Number(optionIndex);
   if (!Number.isInteger(idx) || idx < 0 || idx >= poll.options.length) {
@@ -85,24 +93,31 @@ function recordPollVote({ pollId, voterIdentity, optionIndex }, db = defaultDb) 
   const voter = String(voterIdentity ?? '').trim().slice(0, MAX_NAME_LENGTH);
   if (!voter) return { ok: false, error: 'VOTER_REQUIRED' };
 
-  db.prepare(`
+  await db.run(
+    `
     INSERT INTO poll_votes (poll_id, voter_identity, option_index, created_at)
     VALUES (?, ?, ?, ?)
     ON CONFLICT(poll_id, voter_identity)
     DO UPDATE SET option_index = excluded.option_index, created_at = excluded.created_at
-  `).run(pollId, voter, idx, Date.now());
-  return { ok: true, results: getPollResults(pollId, db) };
+  `,
+    pollId,
+    voter,
+    idx,
+    Date.now()
+  );
+  return { ok: true, results: await getPollResults(pollId, db) };
 }
 
 /**
  * Poll plus per-option tallies and the voter list (ordered by vote time).
  */
-function getPollResults(pollId, db = defaultDb) {
-  const poll = getPoll(pollId, db);
+async function getPollResults(pollId, db = defaultDb) {
+  const poll = await getPoll(pollId, db);
   if (!poll) return null;
-  const votes = db.prepare(
-    'SELECT voter_identity, option_index FROM poll_votes WHERE poll_id = ? ORDER BY created_at ASC'
-  ).all(pollId);
+  const votes = await db.all(
+    'SELECT voter_identity, option_index FROM poll_votes WHERE poll_id = ? ORDER BY created_at ASC',
+    pollId
+  );
   const counts = poll.options.map(() => 0);
   votes.forEach((v) => {
     if (v.option_index >= 0 && v.option_index < counts.length) counts[v.option_index] += 1;
@@ -115,23 +130,23 @@ function getPollResults(pollId, db = defaultDb) {
   };
 }
 
-function getPoll(pollId, db = defaultDb) {
-  const row = db.prepare('SELECT * FROM polls WHERE id = ?').get(pollId);
+async function getPoll(pollId, db = defaultDb) {
+  const row = await db.get('SELECT * FROM polls WHERE id = ?', pollId);
   return pollRowToPoll(row);
 }
 
 /**
  * All polls for a room, each with results (host download / refresh restore).
  */
-function listPolls(roomName, db = defaultDb) {
-  const rows = db.prepare('SELECT * FROM polls WHERE room_name = ? ORDER BY created_at ASC').all(roomName);
-  return rows.map((r) => getPollResults(r.id, db));
+async function listPolls(roomName, db = defaultDb) {
+  const rows = await db.all('SELECT * FROM polls WHERE room_name = ? ORDER BY created_at ASC', roomName);
+  return Promise.all(rows.map((r) => getPollResults(r.id, db)));
 }
 
 /**
  * Ask a Q&A question. Returns {ok:true,question} or {ok:false,error}.
  */
-function createQuestion({ roomName, authorIdentity, authorName, body }, db = defaultDb) {
+async function createQuestion({ roomName, authorIdentity, authorName, body }, db = defaultDb) {
   const cleanRoom = String(roomName ?? '').trim().slice(0, 100);
   const cleanAuthorId = String(authorIdentity ?? '').trim().slice(0, MAX_NAME_LENGTH);
   const cleanAuthor = String(authorName ?? '').trim().slice(0, MAX_NAME_LENGTH);
@@ -141,11 +156,19 @@ function createQuestion({ roomName, authorIdentity, authorName, body }, db = def
   if (!cleanBody) return { ok: false, error: 'BODY_REQUIRED' };
 
   const id = uuidv4();
-  db.prepare(`
+  await db.run(
+    `
     INSERT INTO qa_questions (id, room_name, author_identity, author_name, body, upvotes, is_answered, created_at)
     VALUES (?, ?, ?, ?, ?, 0, 0, ?)
-  `).run(id, cleanRoom, cleanAuthorId, cleanAuthor, cleanBody, Date.now());
-  return { ok: true, question: getQuestion(id, db) };
+  `,
+    id,
+    cleanRoom,
+    cleanAuthorId,
+    cleanAuthor,
+    cleanBody,
+    Date.now()
+  );
+  return { ok: true, question: await getQuestion(id, db) };
 }
 
 /**
@@ -154,8 +177,8 @@ function createQuestion({ roomName, authorIdentity, authorName, body }, db = def
  * and the upvotes counter is recomputed as SUM(delta) so toggles stay accurate
  * and a neutral toggle removes the row entirely (no residual bias).
  */
-function recordQuestionVote({ questionId, voterIdentity, delta }, db = defaultDb) {
-  const current = getQuestion(questionId, db);
+async function recordQuestionVote({ questionId, voterIdentity, delta }, db = defaultDb) {
+  const current = await getQuestion(questionId, db);
   if (!current) return { ok: false, error: 'QUESTION_NOT_FOUND' };
   const voter = String(voterIdentity ?? '').trim().slice(0, MAX_NAME_LENGTH);
   if (!voter) return { ok: false, error: 'VOTER_REQUIRED' };
@@ -163,32 +186,39 @@ function recordQuestionVote({ questionId, voterIdentity, delta }, db = defaultDb
   if (![1, 0, -1].includes(d)) return { ok: false, error: 'DELTA_INVALID' };
 
   if (d === 0) {
-    db.prepare('DELETE FROM qa_upvotes WHERE question_id = ? AND voter_identity = ?').run(questionId, voter);
+    await db.run('DELETE FROM qa_upvotes WHERE question_id = ? AND voter_identity = ?', questionId, voter);
   } else {
-    db.prepare(`
+    await db.run(
+      `
       INSERT INTO qa_upvotes (question_id, voter_identity, delta, created_at)
       VALUES (?, ?, ?, ?)
       ON CONFLICT(question_id, voter_identity)
       DO UPDATE SET delta = excluded.delta, created_at = excluded.created_at
-    `).run(questionId, voter, d, Date.now());
+    `,
+      questionId,
+      voter,
+      d,
+      Date.now()
+    );
   }
 
-  const { total } = db.prepare(
-    'SELECT COALESCE(SUM(delta), 0) AS total FROM qa_upvotes WHERE question_id = ?'
-  ).get(questionId);
-  db.prepare('UPDATE qa_questions SET upvotes = ? WHERE id = ?').run(total, questionId);
-  return { ok: true, question: getQuestion(questionId, db) };
+  const { total } = await db.get(
+    'SELECT COALESCE(SUM(delta), 0) AS total FROM qa_upvotes WHERE question_id = ?',
+    questionId
+  );
+  await db.run('UPDATE qa_questions SET upvotes = ? WHERE id = ?', total, questionId);
+  return { ok: true, question: await getQuestion(questionId, db) };
 }
 
-function markQuestionAnswered(questionId, isAnswered, db = defaultDb) {
-  const current = getQuestion(questionId, db);
+async function markQuestionAnswered(questionId, isAnswered, db = defaultDb) {
+  const current = await getQuestion(questionId, db);
   if (!current) return { ok: false, error: 'QUESTION_NOT_FOUND' };
-  db.prepare('UPDATE qa_questions SET is_answered = ? WHERE id = ?').run(isAnswered ? 1 : 0, questionId);
-  return { ok: true, question: getQuestion(questionId, db) };
+  await db.run('UPDATE qa_questions SET is_answered = ? WHERE id = ?', isAnswered ? 1 : 0, questionId);
+  return { ok: true, question: await getQuestion(questionId, db) };
 }
 
-function getQuestion(questionId, db = defaultDb) {
-  const row = db.prepare('SELECT * FROM qa_questions WHERE id = ?').get(questionId);
+async function getQuestion(questionId, db = defaultDb) {
+  const row = await db.get('SELECT * FROM qa_questions WHERE id = ?', questionId);
   return questionRowToQuestion(row);
 }
 
@@ -197,16 +227,21 @@ function getQuestion(questionId, db = defaultDb) {
  * ties), each with the per-voter delta breakdown so clients can restore their
  * own vote position after a refresh.
  */
-function listQuestions(roomName, db = defaultDb) {
-  const rows = db.prepare(
-    'SELECT * FROM qa_questions WHERE room_name = ? ORDER BY upvotes DESC, created_at ASC'
-  ).all(roomName);
-  const byId = db.prepare('SELECT voter_identity, delta FROM qa_upvotes WHERE question_id = ?');
-  return rows.map((row) => {
-    const question = questionRowToQuestion(row);
-    const votes = byId.all(row.id).map((v) => ({ voterIdentity: v.voter_identity, delta: v.delta }));
-    return { ...question, votes };
-  });
+async function listQuestions(roomName, db = defaultDb) {
+  const rows = await db.all(
+    'SELECT * FROM qa_questions WHERE room_name = ? ORDER BY upvotes DESC, created_at ASC',
+    roomName
+  );
+  return Promise.all(
+    rows.map(async (row) => {
+      const question = questionRowToQuestion(row);
+      const votes = (await db.all(
+        'SELECT voter_identity, delta FROM qa_upvotes WHERE question_id = ?',
+        row.id
+      )).map((v) => ({ voterIdentity: v.voter_identity, delta: v.delta }));
+      return { ...question, votes };
+    })
+  );
 }
 
 module.exports = {

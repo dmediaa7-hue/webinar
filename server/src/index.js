@@ -136,7 +136,7 @@ const asyncHandler = (fn) => (req, res, next) => {
 // /api/rooms/:roomId/recording/upload is visible inside this sub-router.
 const uploadRouter = express.Router({ mergeParams: true });
 uploadRouter.use(express.json({ limit: '200mb' }));
-uploadRouter.post('/', (req, res) => {
+uploadRouter.post('/', asyncHandler(async (req, res) => {
   const room = requireRoomHost(req, res, req.params.roomId);
   if (!room) return;
   const { folder, filename, data, hostId } = req.body || {};
@@ -156,13 +156,13 @@ uploadRouter.post('/', (req, res) => {
     return res.status(413).json({ error: 'Recording exceeds 500MB limit' });
   }
   try {
-    const result = recording.saveRecording({ roomName: room.name, folder: folder.trim(), filename, base64Data: data });
+    const result = await recording.saveRecording({ roomName: room.name, folder: folder.trim(), filename, base64Data: data });
     res.json(result);
   } catch (err) {
     const status = ['FOLDER_REQUIRED', 'INVALID_FILENAME', 'DATA_REQUIRED', 'FOLDER_UNSAFE'].includes(err.code) ? 400 : 500;
     res.status(status).json({ error: err.message });
   }
-});
+}));
 app.use('/api/rooms/:roomId/recording/upload', uploadRouter);
 
 // Global JSON parser: 1mb for all non-upload endpoints (recording uploads use
@@ -172,52 +172,52 @@ app.use(cookieParser());
 
 // --- Authentication routes ---
 
-app.post('/api/auth/register', (req, res) => {
-  const result = auth.registerUser(req.body || {});
+app.post('/api/auth/register', asyncHandler(async (req, res) => {
+  const result = await auth.registerUser(req.body || {});
   if (!result.ok) return res.status(result.status).json({ error: result.error });
-  const { cookieValue, cookieOptions } = auth.createSession(result.user.id);
+  const { cookieValue, cookieOptions } = await auth.createSession(result.user.id);
   res.cookie(auth.COOKIE_NAME, cookieValue, cookieOptions);
   res.status(201).json({ user: result.user });
-});
+}));
 
-app.post('/api/auth/login', (req, res) => {
+app.post('/api/auth/login', asyncHandler(async (req, res) => {
   const { email, password } = req.body || {};
-  const user = auth.verifyCredentials(email, password);
+  const user = await auth.verifyCredentials(email, password);
   if (!user) return res.status(401).json({ error: 'Invalid email or password' });
-  const { cookieValue, cookieOptions } = auth.createSession(user.id);
+  const { cookieValue, cookieOptions } = await auth.createSession(user.id);
   res.cookie(auth.COOKIE_NAME, cookieValue, cookieOptions);
   res.json({ user });
-});
+}));
 
 // Password reset, self-hosted pattern: there is no mail infrastructure, so the
 // reset link is returned in the API response itself. The deployed client is a
 // separate origin (Vite SPA), so the link points at the client (CLIENT_URL),
 // never at the API host.
-app.post('/api/auth/forgot-password', (req, res) => {
+app.post('/api/auth/forgot-password', asyncHandler(async (req, res) => {
   const { email } = req.body || {};
-  const result = auth.requestPasswordReset(email);
+  const result = await auth.requestPasswordReset(email);
   if (!result.ok) return res.status(result.status).json({ error: result.error });
   const CLIENT_BASE = (process.env.CLIENT_URL || (req.protocol + '://' + req.get('host'))).split(',')[0].trim();
   const resetLink = `${CLIENT_BASE.replace(/\/$/, '')}/reset-password?token=${result.resetToken}`;
   res.json({ ok: true, resetLink });
-});
+}));
 
-app.post('/api/auth/reset-password', (req, res) => {
+app.post('/api/auth/reset-password', asyncHandler(async (req, res) => {
   const { token, password } = req.body || {};
-  const result = auth.applyPasswordReset(token, password);
+  const result = await auth.applyPasswordReset(token, password);
   if (!result.ok) return res.status(result.status).json({ error: result.error });
   res.json({ ok: true });
-});
+}));
 
-app.post('/api/auth/logout', (req, res) => {
-  auth.destroySession(req.cookies && req.cookies[auth.COOKIE_NAME]);
+app.post('/api/auth/logout', asyncHandler(async (req, res) => {
+  await auth.destroySession(req.cookies && req.cookies[auth.COOKIE_NAME]);
   res.clearCookie(auth.COOKIE_NAME, { path: '/' });
   res.json({ ok: true });
-});
+}));
 
-app.get('/api/auth/me', auth.requireAuth, (req, res) => {
+app.get('/api/auth/me', auth.requireAuth, asyncHandler(async (req, res) => {
   res.json({ user: req.user });
-});
+}));
 
 // Health check
 app.get('/api/health', (req, res) => {
@@ -241,12 +241,12 @@ function meetingWithInvite(meeting) {
   return { ...meeting, invite: invite.inviteFor(meeting) };
 }
 
-app.get('/api/meetings', auth.requireAuth, (req, res) => {
-  const list = meetings.listMeetings({ hostUserId: req.user.id });
+app.get('/api/meetings', auth.requireAuth, asyncHandler(async (req, res) => {
+  const list = await meetings.listMeetings({ hostUserId: req.user.id });
   res.json({ meetings: list.map(meetingWithInvite) });
-});
+}));
 
-app.post('/api/meetings', auth.requireAuth, (req, res) => {
+app.post('/api/meetings', auth.requireAuth, asyncHandler(async (req, res) => {
   const input = {
     hostUserId: req.user.id,
     title: req.body?.title,
@@ -257,43 +257,43 @@ app.post('/api/meetings', auth.requireAuth, (req, res) => {
     waitingRoomEnabled: req.body?.waitingRoomEnabled
   };
   try {
-    const meeting = meetings.createMeeting(input);
+    const meeting = await meetings.createMeeting(input);
     res.status(201).json({ meeting: meetingWithInvite(meeting) });
   } catch (err) {
     res.status(400).json({ error: err.message });
   }
-});
+}));
 
-app.get('/api/meetings/:id', auth.requireAuth, (req, res) => {
-  const meeting = meetings.getMeeting(req.params.id);
+app.get('/api/meetings/:id', auth.requireAuth, asyncHandler(async (req, res) => {
+  const meeting = await meetings.getMeeting(req.params.id);
   if (!meeting) return res.status(404).json({ error: 'Meeting not found' });
   if (meeting.hostUserId !== req.user.id) return res.status(403).json({ error: 'Forbidden' });
   res.json({ meeting: meetingWithInvite(meeting) });
-});
+}));
 
 // Deliberately public like a calendar invite: anyone holding the link can
 // fetch the ICS without an account.
-app.get('/api/meetings/:id/invite.ics', (req, res) => {
-  const meeting = meetings.getMeeting(req.params.id);
+app.get('/api/meetings/:id/invite.ics', asyncHandler(async (req, res) => {
+  const meeting = await meetings.getMeeting(req.params.id);
   if (!meeting) return res.status(404).json({ error: 'Meeting not found' });
   res.setHeader('Content-Type', 'text/calendar; charset=utf-8');
   res.setHeader('Content-Disposition', `attachment; filename="webinar-${meeting.id}.ics"`);
   res.send(invite.toICS(meeting));
-});
+}));
 
-app.delete('/api/meetings/:id', auth.requireAuth, (req, res) => {
-  const meeting = meetings.getMeeting(req.params.id);
+app.delete('/api/meetings/:id', auth.requireAuth, asyncHandler(async (req, res) => {
+  const meeting = await meetings.getMeeting(req.params.id);
   if (!meeting) return res.status(404).json({ error: 'Meeting not found' });
   if (meeting.hostUserId !== req.user.id) return res.status(403).json({ error: 'Forbidden' });
-  meetings.deleteMeeting(req.params.id);
+  await meetings.deleteMeeting(req.params.id);
   res.json({ ok: true });
-});
+}));
 
 // Start a scheduled meeting (owner only): materializes the in-memory room
 // with the scheduled settings so /meeting/:id joins work. Idempotent - a
 // second start reuses the live room. An ended meeting refuses to start.
-app.post('/api/meetings/:id/start', auth.requireAuth, (req, res) => {
-  const row = meetings.getMeetingRow(req.params.id);
+app.post('/api/meetings/:id/start', auth.requireAuth, asyncHandler(async (req, res) => {
+  const row = await meetings.getMeetingRow(req.params.id);
   if (!row) return res.status(404).json({ error: 'Meeting not found' });
   if (row.host_user_id !== req.user.id) return res.status(403).json({ error: 'Forbidden' });
   if (Date.now() > row.end_time) {
@@ -310,23 +310,23 @@ app.post('/api/meetings/:id/start', auth.requireAuth, (req, res) => {
       isLocked: false
     });
   }
-  const meeting = meetings.getMeeting(row.id);
+  const meeting = await meetings.getMeeting(row.id);
   res.json({
     roomId: row.id,
     roomName: meeting.roomName || row.title,
     hasPassword: Boolean(row.passcode_hash),
     invite: invite.inviteFor(meeting)
   });
-});
+}));
 
 // Create room
-app.post('/api/rooms', (req, res) => {
+app.post('/api/rooms', asyncHandler(async (req, res) => {
   try {
     const hostName = cleanText(req.body?.hostName || 'Host', 60) || 'Host';
     const roomName = cleanText(req.body?.roomName || '', 100) || null;
     const password = cleanPassword(req.body?.password);
     const roomId = uuidv4().slice(0, 8);
-    createRoom(roomId, hostName, null, password, roomName);
+    await createRoom(roomId, hostName, null, password, roomName);
     res.status(201).json({
       roomId,
       roomName: (roomName || hostName + "'s Meeting"),
@@ -336,15 +336,15 @@ app.post('/api/rooms', (req, res) => {
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
-});
+}));
 
 // Get room info. A room that has not been started (or has ended) surfaces its
 // scheduled-meeting status so guests with an invite link see a clear state
 // instead of a bare "not found".
-app.get('/api/rooms/:roomId', (req, res) => {
+app.get('/api/rooms/:roomId', asyncHandler(async (req, res) => {
   const room = getRoom(req.params.roomId);
   if (!room) {
-    const scheduled = meetings.getMeetingRow(req.params.roomId);
+    const scheduled = await meetings.getMeetingRow(req.params.roomId);
     if (scheduled) {
       const now = Date.now();
       if (now > scheduled.end_time) {
@@ -371,7 +371,7 @@ app.get('/api/rooms/:roomId', (req, res) => {
     participantCount: room.participants.size,
     isRecording: room.isRecording
   });
-});
+}));
 
 // List participants
 app.get('/api/rooms/:roomId/participants', (req, res) => {
@@ -398,10 +398,10 @@ app.get('/api/rooms/:roomId/attendance', (req, res) => {
   res.json({ attendance: getAttendance(req.params.roomId) });
 });
 
-app.get('/api/rooms/:roomId/recording/status', (req, res) => {
+app.get('/api/rooms/:roomId/recording/status', asyncHandler(async (req, res) => {
   const room = requireRoomHost(req, res, req.params.roomId);
   if (!room) return;
-  const rows = db.prepare('SELECT id, room_name, status, created_at, url FROM recordings WHERE room_name = ? ORDER BY id DESC').all(room.name);
+  const rows = await db.all('SELECT id, room_name, status, created_at, url FROM recordings WHERE room_name = ? ORDER BY id DESC', room.name);
   const recordings = rows.map((r) => ({
     id: r.id,
     status: r.status,
@@ -409,23 +409,23 @@ app.get('/api/rooms/:roomId/recording/status', (req, res) => {
     filename: require('path').basename(r.url)
   }));
   res.json({ recordings });
-});
+}));
 
 // --- Breakout room endpoints (host-gated via x-host-id; task 12) ---
 
 // Emit persisted breakout state to the room so client panels refresh.
-function broadcastBreakouts(roomId) {
-  const state = breakout.listBreakouts(roomId);
+async function broadcastBreakouts(roomId) {
+  const state = await breakout.listBreakouts(roomId);
   if (!state.error) io.to(roomId).emit('breakout-updated', state);
 }
 
-app.get('/api/rooms/:roomId/breakouts', (req, res) => {
+app.get('/api/rooms/:roomId/breakouts', asyncHandler(async (req, res) => {
   const room = requireRoomHost(req, res, req.params.roomId);
   if (!room) return;
-  const result = breakout.listBreakouts(req.params.roomId);
+  const result = await breakout.listBreakouts(req.params.roomId);
   if (result.error) return res.status(404).json(result);
   res.json(result);
-});
+}));
 
 app.post('/api/rooms/:roomId/breakouts', asyncHandler(async (req, res) => {
   const room = requireRoomHost(req, res, req.params.roomId);
@@ -439,7 +439,7 @@ app.post('/api/rooms/:roomId/breakouts', asyncHandler(async (req, res) => {
     const status = result.code === 'DUPLICATE_BREAKOUT' ? 409 : 400;
     return res.status(status).json(result);
   }
-  broadcastBreakouts(req.params.roomId);
+  await broadcastBreakouts(req.params.roomId);
   res.status(201).json(result);
 }));
 
@@ -453,7 +453,7 @@ app.post('/api/rooms/:roomId/breakouts/assign', asyncHandler(async (req, res) =>
       : result.code === 'PARTICIPANT_NOT_FOUND' ? 404 : 400;
     return res.status(status).json(result);
   }
-  broadcastBreakouts(req.params.roomId);
+  await broadcastBreakouts(req.params.roomId);
   res.json(result);
 }));
 
@@ -465,7 +465,7 @@ app.post('/api/rooms/:roomId/breakouts/return', asyncHandler(async (req, res) =>
   if (result.error) {
     return res.status(400).json(result);
   }
-  broadcastBreakouts(req.params.roomId);
+  await broadcastBreakouts(req.params.roomId);
   res.json(result);
 }));
 
@@ -476,7 +476,7 @@ app.post('/api/rooms/:roomId/breakouts/teardown', asyncHandler(async (req, res) 
   if (result.error) {
     return res.status(400).json(result);
   }
-  broadcastBreakouts(req.params.roomId);
+  await broadcastBreakouts(req.params.roomId);
   res.json(result);
 }));
 
@@ -510,10 +510,10 @@ function requireRoomParticipant(req, res, roomId) {
 }
 
 // Create a poll (host-only, x-host-id gate).
-app.post('/api/rooms/:roomId/polls', (req, res) => {
+app.post('/api/rooms/:roomId/polls', asyncHandler(async (req, res) => {
   const room = requireRoomHost(req, res, req.params.roomId);
   if (!room) return;
-  const result = engagement.createPoll({
+  const result = await engagement.createPoll({
     roomName: req.params.roomId,
     question: req.body?.question,
     options: req.body?.options,
@@ -521,33 +521,33 @@ app.post('/api/rooms/:roomId/polls', (req, res) => {
   });
   if (!result.ok) return res.status(400).json({ error: result.error });
   res.status(201).json({ poll: result.poll });
-});
+}));
 
 // Cast / replace a participant's vote (idempotent per voter).
-app.post('/api/rooms/:roomId/polls/:pollId/votes', (req, res) => {
+app.post('/api/rooms/:roomId/polls/:pollId/votes', asyncHandler(async (req, res) => {
   const room = requireRoomParticipant(req, res, req.params.roomId);
   if (!room) return;
-  const result = engagement.recordPollVote({
+  const result = await engagement.recordPollVote({
     pollId: req.params.pollId,
     voterIdentity: req.body?.identity,
     optionIndex: req.body?.optionIndex
   });
   if (!result.ok) return res.status(400).json({ error: result.error });
   res.json({ results: result.results });
-});
+}));
 
 // Poll list with tallies (refresh restore / host download; room-scoped).
-app.get('/api/rooms/:roomId/polls', (req, res) => {
+app.get('/api/rooms/:roomId/polls', asyncHandler(async (req, res) => {
   const room = getRoom(req.params.roomId);
   if (!room) return res.status(404).json({ error: 'Room not found' });
-  res.json({ polls: engagement.listPolls(req.params.roomId) });
-});
+  res.json({ polls: await engagement.listPolls(req.params.roomId) });
+}));
 
 // Ask a Q&A question (participant).
-app.post('/api/rooms/:roomId/qa', (req, res) => {
+app.post('/api/rooms/:roomId/qa', asyncHandler(async (req, res) => {
   const room = requireRoomParticipant(req, res, req.params.roomId);
   if (!room) return;
-  const result = engagement.createQuestion({
+  const result = await engagement.createQuestion({
     roomName: req.params.roomId,
     authorIdentity: req.body?.identity,
     authorName: req.body?.name,
@@ -555,14 +555,14 @@ app.post('/api/rooms/:roomId/qa', (req, res) => {
   });
   if (!result.ok) return res.status(400).json({ error: result.error });
   res.status(201).json({ question: result.question });
-});
+}));
 
 // Vote on a question (participant): delta +1 upvote / -1 downvote / 0 neutral.
 // The net score is the SUM of per-voter deltas.
-app.post('/api/rooms/:roomId/qa/:questionId/vote', (req, res) => {
+app.post('/api/rooms/:roomId/qa/:questionId/vote', asyncHandler(async (req, res) => {
   const room = requireRoomParticipant(req, res, req.params.roomId);
   if (!room) return;
-  const result = engagement.recordQuestionVote({
+  const result = await engagement.recordQuestionVote({
     questionId: req.params.questionId,
     voterIdentity: req.body?.identity,
     delta: req.body?.delta
@@ -570,39 +570,39 @@ app.post('/api/rooms/:roomId/qa/:questionId/vote', (req, res) => {
   const status = result.error === 'QUESTION_NOT_FOUND' ? 404 : 400;
   if (!result.ok) return res.status(status).json({ error: result.error });
   res.json({ question: result.question });
-});
+}));
 
 // Mark a question answered / unanswered (host-only).
-app.post('/api/rooms/:roomId/qa/:questionId/answered', (req, res) => {
+app.post('/api/rooms/:roomId/qa/:questionId/answered', asyncHandler(async (req, res) => {
   const room = requireRoomHost(req, res, req.params.roomId);
   if (!room) return;
-  const result = engagement.markQuestionAnswered(req.params.questionId, Boolean(req.body?.isAnswered));
+  const result = await engagement.markQuestionAnswered(req.params.questionId, Boolean(req.body?.isAnswered));
   if (!result.ok) return res.status(404).json({ error: result.error });
   res.json({ question: result.question });
-});
+}));
 
 // Q&A list (refresh restore / host download; room-scoped).
-app.get('/api/rooms/:roomId/qa', (req, res) => {
+app.get('/api/rooms/:roomId/qa', asyncHandler(async (req, res) => {
   const room = getRoom(req.params.roomId);
   if (!room) return res.status(404).json({ error: 'Room not found' });
-  res.json({ questions: engagement.listQuestions(req.params.roomId) });
-});
+  res.json({ questions: await engagement.listQuestions(req.params.roomId) });
+}));
 
 // Whiteboard scene save (participant-gated; debounced by the client).
-app.post('/api/rooms/:roomId/whiteboard', (req, res) => {
+app.post('/api/rooms/:roomId/whiteboard', asyncHandler(async (req, res) => {
   const room = requireRoomParticipant(req, res, req.params.roomId);
   if (!room) return;
-  const result = whiteboard.saveScene(req.params.roomId, req.body?.elements);
+  const result = await whiteboard.saveScene(req.params.roomId, req.body?.elements);
   if (!result.ok) return res.status(400).json({ error: result.error });
   res.json({ ok: true });
-});
+}));
 
 // Whiteboard scene load (room-scoped; reload recovery).
-app.get('/api/rooms/:roomId/whiteboard', (req, res) => {
+app.get('/api/rooms/:roomId/whiteboard', asyncHandler(async (req, res) => {
   const room = getRoom(req.params.roomId);
   if (!room) return res.status(404).json({ error: 'Room not found' });
-  res.json({ elements: whiteboard.getScene(req.params.roomId) || [] });
-});
+  res.json({ elements: await whiteboard.getScene(req.params.roomId) || [] });
+}));
 
 // Socket.io connection handling
 io.on('connection', (socket) => {
@@ -617,141 +617,151 @@ io.on('connection', (socket) => {
   // --- Room management events ---
 
   // Create a new room via socket
-  socket.on('create-room', ({ displayName = 'Host', password = null, roomName = null, isAdmin = false } = {}, callback) => {
-    const cleanName = cleanText(displayName, 60) || 'Host';
-    const cleanRoomName = cleanText(roomName, 100) || null;
-    const cleanPwd = cleanPassword(password);
-    const roomId = uuidv4().slice(0, 8);
-    const room = createRoom(roomId, cleanName, socket.id, cleanPwd, cleanRoomName);
-    socket.data.roomId = roomId;
-    socket.data.displayName = cleanName;
-    socket.data.isHost = true;
-    socket.data.isAdmin = Boolean(isAdmin);
-    socket.join(roomId);
-    socket.emit('room-created', { roomId, roomName: room.name, hasPassword: Boolean(cleanPwd) });
-    socket.emit('attendance-updated', { attendance: getAttendance(roomId) });
-    if (typeof callback === 'function') callback({ success: true, roomId, roomName: room.name, hasPassword: Boolean(cleanPwd) });
+  socket.on('create-room', async ({ displayName = 'Host', password = null, roomName = null, isAdmin = false } = {}, callback) => {
+    try {
+      const cleanName = cleanText(displayName, 60) || 'Host';
+      const cleanRoomName = cleanText(roomName, 100) || null;
+      const cleanPwd = cleanPassword(password);
+      const roomId = uuidv4().slice(0, 8);
+      const room = await createRoom(roomId, cleanName, socket.id, cleanPwd, cleanRoomName);
+      socket.data.roomId = roomId;
+      socket.data.displayName = cleanName;
+      socket.data.isHost = true;
+      socket.data.isAdmin = Boolean(isAdmin);
+      socket.join(roomId);
+      socket.emit('room-created', { roomId, roomName: room.name, hasPassword: Boolean(cleanPwd) });
+      socket.emit('attendance-updated', { attendance: getAttendance(roomId) });
+      if (typeof callback === 'function') callback({ success: true, roomId, roomName: room.name, hasPassword: Boolean(cleanPwd) });
+    } catch (err) {
+      console.error('[create-room error]', err);
+      if (typeof callback === 'function') callback({ success: false, error: err.message || 'Failed to create room' });
+    }
   });
 
   // Join an existing room
-  socket.on('join-room', ({ roomId, displayName = 'Guest', password = null, isAdmin = false }, callback) => {
-    const cleanName = cleanText(displayName, 60) || 'Guest';
-    const cleanPwd = cleanPassword(password);
+  socket.on('join-room', async ({ roomId, displayName = 'Guest', password = null, isAdmin = false }, callback) => {
+    try {
+      const cleanName = cleanText(displayName, 60) || 'Guest';
+      const cleanPwd = cleanPassword(password);
 
-    const room = getRoom(roomId);
-    if (!room) {
-      socket.emit('error-message', { message: 'Room not found' });
-      if (typeof callback === 'function') callback({ success: false, error: 'Room not found' });
-      return;
-    }
+      const room = getRoom(roomId);
+      if (!room) {
+        socket.emit('error-message', { message: 'Room not found' });
+        if (typeof callback === 'function') callback({ success: false, error: 'Room not found' });
+        return;
+      }
 
-    if (room.settings.isLocked) {
-      socket.emit('error-message', { message: 'Room is locked' });
-      if (typeof callback === 'function') callback({ success: false, error: 'Room is locked' });
-      return;
-    }
+      if (room.settings.isLocked) {
+        socket.emit('error-message', { message: 'Room is locked' });
+        if (typeof callback === 'function') callback({ success: false, error: 'Room is locked' });
+        return;
+      }
 
-    const ip = clientIp(socket);
-    if (roomHasPassword(room) && isRateLimited(ip)) {
-      const message = 'Too many failed attempts. Try again in 15 minutes.';
-      socket.emit('error-message', { message });
-      if (typeof callback === 'function') callback({ success: false, error: message, code: 'RATE_LIMITED' });
-      return;
-    }
+      const ip = clientIp(socket);
+      if (roomHasPassword(room) && isRateLimited(ip)) {
+        const message = 'Too many failed attempts. Try again in 15 minutes.';
+        socket.emit('error-message', { message });
+        if (typeof callback === 'function') callback({ success: false, error: message, code: 'RATE_LIMITED' });
+        return;
+      }
 
-    if (roomHasPassword(room) && !verifyPassword(room, cleanPwd)) {
-      recordFailedAttempt(ip);
-      const message = 'Incorrect meeting password';
-      socket.emit('error-message', { message });
-      if (typeof callback === 'function') callback({ success: false, error: message, code: 'WRONG_PASSWORD' });
-      return;
-    }
-    clearAttempts(ip);
+      if (roomHasPassword(room) && !verifyPassword(room, cleanPwd)) {
+        recordFailedAttempt(ip);
+        const message = 'Incorrect meeting password';
+        socket.emit('error-message', { message });
+        if (typeof callback === 'function') callback({ success: false, error: message, code: 'WRONG_PASSWORD' });
+        return;
+      }
+      clearAttempts(ip);
 
-    // Waiting room gate: when enabled, non-host joiners are held without room
-    // membership (no participant entry, not in the socket room) until the host
-    // admits them. The first arrival bypasses the gate so the meeting can be
-    // started even when the host enables the waiting room from an empty room.
-    const isJoiningAsHost = socket.id === room.hostId || room.participants.size === 0;
-    if (room.settings.waitingRoomEnabled && !isJoiningAsHost) {
-      addWaiting(roomId, {
-        socketId: socket.id,
-        userId: uuidv4(),
-        displayName: cleanName
-      });
+      // Waiting room gate: when enabled, non-host joiners are held without room
+      // membership (no participant entry, not in the socket room) until the host
+      // admits them. The first arrival bypasses the gate so the meeting can be
+      // started even when the host enables the waiting room from an empty room.
+      const isJoiningAsHost = socket.id === room.hostId || room.participants.size === 0;
+      if (room.settings.waitingRoomEnabled && !isJoiningAsHost) {
+        addWaiting(roomId, {
+          socketId: socket.id,
+          userId: uuidv4(),
+          displayName: cleanName
+        });
+        socket.data.roomId = roomId;
+        socket.data.displayName = cleanName;
+        socket.data.waiting = true;
+        socket.emit('waiting-room', { roomId, displayName: cleanName });
+        io.to(roomId).emit('waiting-list-updated', { waitingList: getWaitingList(roomId) });
+        if (typeof callback === 'function') callback({ success: true, waiting: true });
+        console.log(`[⏳] ${displayName} waiting in room ${roomId}`);
+        return;
+      }
+
+      let participant;
+      try {
+        const isHost = (room.hostId === socket.id);
+        participant = joinRoom(roomId, {
+          socketId: socket.id,
+          userId: uuidv4(),
+          displayName: cleanName,
+          isHost: isHost || room.participants.size === 0,
+          isMuted: false,
+          isVideoOff: false,
+          isScreenSharing: false
+        });
+      } catch (error) {
+        const message = error.message || 'Unable to join room';
+        socket.emit('error-message', { message });
+        if (typeof callback === 'function') callback({ success: false, error: message });
+        return;
+      }
+
       socket.data.roomId = roomId;
       socket.data.displayName = cleanName;
-      socket.data.waiting = true;
-      socket.emit('waiting-room', { roomId, displayName: cleanName });
-      io.to(roomId).emit('waiting-list-updated', { waitingList: getWaitingList(roomId) });
-      if (typeof callback === 'function') callback({ success: true, waiting: true });
-      console.log(`[⏳] ${displayName} waiting in room ${roomId}`);
-      return;
-    }
+      socket.data.isHost = participant.isHost;
+      socket.data.isAdmin = Boolean(isAdmin);
+      socket.join(roomId);
 
-    let participant;
-    try {
-      const isHost = (room.hostId === socket.id);
-      participant = joinRoom(roomId, {
-        socketId: socket.id,
-        userId: uuidv4(),
-        displayName: cleanName,
-        isHost: isHost || room.participants.size === 0,
-        isMuted: false,
-        isVideoOff: false,
-        isScreenSharing: false
-      });
-    } catch (error) {
-      const message = error.message || 'Unable to join room';
-      socket.emit('error-message', { message });
-      if (typeof callback === 'function') callback({ success: false, error: message });
-      return;
-    }
+      // Notify existing participants
+      const existingParticipants = Array.from(room.participants.values())
+        .filter(p => p.socketId !== socket.id)
+        .map(p => ({
+          socketId: p.socketId,
+          userId: p.userId,
+          displayName: p.displayName,
+          isHost: p.isHost,
+          isMuted: p.isMuted,
+          isVideoOff: p.isVideoOff,
+          isScreenSharing: p.isScreenSharing
+        }));
 
-    socket.data.roomId = roomId;
-    socket.data.displayName = cleanName;
-    socket.data.isHost = participant.isHost;
-    socket.data.isAdmin = Boolean(isAdmin);
-    socket.join(roomId);
-
-    // Notify existing participants
-    const existingParticipants = Array.from(room.participants.values())
-      .filter(p => p.socketId !== socket.id)
-      .map(p => ({
-        socketId: p.socketId,
-        userId: p.userId,
-        displayName: p.displayName,
-        isHost: p.isHost,
-        isMuted: p.isMuted,
-        isVideoOff: p.isVideoOff,
-        isScreenSharing: p.isScreenSharing
-      }));
-
-    socket.emit('room-joined', {
-      roomId,
-      roomName: room.name,
-      participants: existingParticipants,
-      isHost: participant.isHost,
-      hasPassword: roomHasPassword(room),
-      settings: room.settings
-    });
-
-    // Notify others that someone joined
-    socket.to(roomId).emit('participant-joined', {
-      participant: {
-        socketId: socket.id,
-        userId: participant.userId,
-        displayName: cleanName,
+      socket.emit('room-joined', {
+        roomId,
+        roomName: room.name,
+        participants: existingParticipants,
         isHost: participant.isHost,
-        isMuted: false,
-        isVideoOff: false,
-        isScreenSharing: false
-      }
-    });
+        hasPassword: roomHasPassword(room),
+        settings: room.settings
+      });
 
-    console.log(`[+] ${displayName} joined room ${roomId}`);
-    io.to(roomId).emit('attendance-updated', { attendance: getAttendance(roomId) });
-    if (typeof callback === 'function') callback({ success: true, isHost: participant.isHost });
+      // Notify others that someone joined
+      socket.to(roomId).emit('participant-joined', {
+        participant: {
+          socketId: socket.id,
+          userId: participant.userId,
+          displayName: cleanName,
+          isHost: participant.isHost,
+          isMuted: false,
+          isVideoOff: false,
+          isScreenSharing: false
+        }
+      });
+
+      console.log(`[+] ${displayName} joined room ${roomId}`);
+      io.to(roomId).emit('attendance-updated', { attendance: getAttendance(roomId) });
+      if (typeof callback === 'function') callback({ success: true, isHost: participant.isHost });
+    } catch (err) {
+      console.error('[join-room error]', err);
+      if (typeof callback === 'function') callback({ success: false, error: err.message || 'Failed to join room' });
+    }
   });
 
   // Leave room
@@ -868,27 +878,33 @@ io.on('connection', (socket) => {
   });
 
   // Toggle waiting room (host only)
-  socket.on('toggle-waiting-room', () => {
-    const room = getRoom(socket.data.roomId);
-    if (!room || !socket.data.isHost) return;
-    const enabling = !room.settings.waitingRoomEnabled;
-    const settings = updateRoomSettings(room.id, { waitingRoomEnabled: enabling });
-    io.to(room.id).emit('room-settings-updated', settings);
+  socket.on('toggle-waiting-room', async () => {
+    try {
+      const room = getRoom(socket.data.roomId);
+      if (!room || !socket.data.isHost) return;
+      const enabling = !room.settings.waitingRoomEnabled;
+      const settings = await updateRoomSettings(room.id, { waitingRoomEnabled: enabling });
+      io.to(room.id).emit('room-settings-updated', settings);
 
-    if (!enabling) {
-      // Waiting room turned off: admit everyone currently held, so no joiner
-      // is left stuck outside the meeting with no path in.
-      const waitingList = getWaitingList(room.id);
-      waitingList.forEach((w) => admitWaitingJoiner(room, w));
-      io.to(room.id).emit('waiting-list-updated', { waitingList: getWaitingList(room.id) });
+      if (!enabling) {
+        // Waiting room turned off: admit everyone currently held, so no joiner
+        // is left stuck outside the meeting with no path in.
+        const waitingList = getWaitingList(room.id);
+        for (const w of waitingList) {
+          await admitWaitingJoiner(room, w);
+        }
+        io.to(room.id).emit('waiting-list-updated', { waitingList: getWaitingList(room.id) });
+      }
+    } catch (err) {
+      console.error('[toggle-waiting-room error]', err);
     }
   });
 
-  function admitWaitingJoiner(room, waiting) {
+  async function admitWaitingJoiner(room, waiting) {
     removeWaiting(room.id, waiting.socketId);
     const target = io.sockets.sockets.get(waiting.socketId);
     if (!target) return;
-    const participant = joinRoom(room.id, {
+    const participant = await joinRoom(room.id, {
       socketId: waiting.socketId,
       userId: waiting.userId,
       displayName: waiting.displayName,
@@ -940,35 +956,25 @@ io.on('connection', (socket) => {
   // Admit a waiting joiner (host only): promotes them to a participant, puts
   // their socket in the room, and hands them the standard room-joined payload
   // so the client's normal admission path runs (store sync + media connect).
-  socket.on('admit-waiting', ({ targetId } = {}, ack) => {
-    const room = getRoom(socket.data.roomId);
-    if (!room || !socket.data.isHost) {
-      ack?.({ success: false, error: 'FORBIDDEN' });
-      return;
-    }
-    const waiting = getWaitingList(room.id).find((w) => w.socketId === targetId);
-    if (!waiting) {
-      ack?.({ success: false, error: 'NOT_WAITING' });
-      return;
-    }
-    admitWaitingJoiner(room, waiting);
-    io.to(room.id).emit('waiting-list-updated', { waitingList: getWaitingList(room.id) });
-    ack?.({ success: true, socketId: targetId, displayName: waiting.displayName });
-    console.log(`[✅] ${waiting.displayName} admitted to room ${room.id}`);
-  });
-
-  // Deny a waiting joiner (host only): back to the lobby with a message.
-  socket.on('deny-waiting', ({ targetId } = {}) => {
-    const room = getRoom(socket.data.roomId);
-    if (!room || !socket.data.isHost) return;
-    if (removeWaiting(room.id, targetId)) {
-      const target = io.sockets.sockets.get(targetId);
-      if (target) {
-        target.data.roomId = null;
-        target.data.waiting = false;
-        target.emit('waiting-denied', { message: 'The host did not admit you to this meeting.' });
+  socket.on('admit-waiting', async ({ targetId } = {}, ack) => {
+    try {
+      const room = getRoom(socket.data.roomId);
+      if (!room || !socket.data.isHost) {
+        ack?.({ success: false, error: 'FORBIDDEN' });
+        return;
       }
+      const waiting = getWaitingList(room.id).find((w) => w.socketId === targetId);
+      if (!waiting) {
+        ack?.({ success: false, error: 'NOT_WAITING' });
+        return;
+      }
+      await admitWaitingJoiner(room, waiting);
       io.to(room.id).emit('waiting-list-updated', { waitingList: getWaitingList(room.id) });
+      ack?.({ success: true, socketId: targetId, displayName: waiting.displayName });
+      console.log(`[✅] ${waiting.displayName} admitted to room ${room.id}`);
+    } catch (err) {
+      console.error('[admit-waiting error]', err);
+      ack?.({ success: false, error: err.message || 'Failed to admit' });
     }
   });
 
@@ -988,12 +994,17 @@ io.on('connection', (socket) => {
   });
 
   // Lock room (host only)
-  socket.on('lock-room', ({ isLocked }, ack) => {
-    const room = getRoom(socket.data.roomId);
-    if (!room || !socket.data.isHost) return;
-    const settings = updateRoomSettings(room.id, { isLocked: Boolean(isLocked) });
-    io.to(room.id).emit('room-locked', { isLocked: settings.isLocked });
-    ack?.({ success: true, roomId: room.id, isLocked: settings.isLocked });
+  socket.on('lock-room', async ({ isLocked }, ack) => {
+    try {
+      const room = getRoom(socket.data.roomId);
+      if (!room || !socket.data.isHost) return;
+      const settings = await updateRoomSettings(room.id, { isLocked: Boolean(isLocked) });
+      io.to(room.id).emit('room-locked', { isLocked: settings.isLocked });
+      ack?.({ success: true, roomId: room.id, isLocked: settings.isLocked });
+    } catch (err) {
+      console.error('[lock-room error]', err);
+      ack?.({ success: false, error: err.message || 'Failed to update room' });
+    }
   });
 
   // --- WebRTC signaling ---

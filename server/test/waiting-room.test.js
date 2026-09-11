@@ -65,9 +65,9 @@ function expectEventWithin(client, event, windowMs = 800) {
   });
 }
 
-test('waiting room helpers hold and release joiners', () => {
-  const db = createDatabase(':memory:');
-  roomsApi.createRoom('wr-unit', 'Host A', 'host-sock', null, null, db);
+test('waiting room helpers hold and release joiners', async () => {
+  const db = await createDatabase(':memory:');
+  await roomsApi.createRoom('wr-unit', 'Host A', 'host-sock', null, null, db);
 
   assert.deepEqual(roomsApi.addWaiting('wr-unit', { socketId: 'g1', userId: 'u1', displayName: 'Guest 1' }), { ok: true });
   assert.equal(roomsApi.isWaiting('wr-unit', 'g1'), true);
@@ -82,6 +82,7 @@ test('waiting room helpers hold and release joiners', () => {
   assert.equal(roomsApi.isWaiting('wr-unit', 'g1'), false);
   assert.equal(roomsApi.getWaitingList('wr-unit').length, 0);
   assert.equal(roomsApi.removeWaiting('wr-unit', 'g1'), false);
+  await db.close();
 });
 
 test('waiting users are gated on join; room-joined only after admit', async (t) => {

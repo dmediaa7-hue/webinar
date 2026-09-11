@@ -74,6 +74,22 @@ async function run() {
     const regPayload = await res.json();
     assert(regPayload.user && regPayload.user.email === email, 'Register returns created user');
 
+    // Two sessions for the same user created within the same second must stay
+    // distinct. JWT iat has 1s granularity, so without a random jti the two
+    // tokens are byte-identical and the second INSERT collides on token_hash.
+    const auth = require('../src/auth');
+    let sameSecondSessions = null;
+    try {
+      const first = await auth.createSession(regPayload.user.id);
+      const second = await auth.createSession(regPayload.user.id);
+      if (first.cookieValue === second.cookieValue) {
+        sameSecondSessions = 'duplicate token produced';
+      }
+    } catch (e) {
+      sameSecondSessions = e.message;
+    }
+    assert(sameSecondSessions === null, `same-second sessions stay distinct (${sameSecondSessions || 'ok'})`);
+
     res = await client.request('/api/auth/register', {
       method: 'POST',
       body: JSON.stringify({ email, name: 'Dup', password: 'password123' })
