@@ -159,24 +159,53 @@ export function useWebRTC(socket) {
   }, []);
 
   /**
-   * Replace the local stream sent to all peers (used for screen sharing).
-   * The previously attached stream is removed first so remote peers get a
-   * clean swap instead of two simultaneous streams.
+   * Swap the local video/audio track sent to all peers (screen share, flip).
+   * Uses peer.replaceTrack (same RTCRtpSender, no renegotiation) instead of
+   * removeStream/addStream: a removed sender can never be re-added in
+   * simple-peer ('Track has been removed'), which crashed screen-share stop.
+   * Tracks of kinds absent from the new stream (e.g. mic during screen
+   * share) keep flowing untouched.
    */
   const replaceLocalStream = useCallback((stream) => {
     const previous = useStore.getState().localStream;
     useStore.getState().setLocalStream(stream);
 
+    const prevTracks = previous ? previous.getTracks() : [];
+    const nextTracks = stream.getTracks();
+
     peersRef.current.forEach((peer, socketId) => {
-      if (peer && !peer.destroyed) {
-        try {
-          if (previous && previous !== stream) {
-            peer.removeStream(previous);
+      if (!peer || peer.destroyed) return;
+      try {
+        nextTracks.forEach((nextTrack) => {
+          const oldTrack = prevTracks.find((t) => t.kind === nextTrack.kind);
+          if (!oldTrack || oldTrack === nextTrack) return;
+
+          // replaceTrack's sender lookup is keyed by the stream the old track
+          // was originally attached to (or the submap it inherited via an
+          // earlier swap), so try the new stream, then the previous one.
+          try {
+            peer.replaceTrack(oldTrack, nextTrack, stream);
+          } catch (err) {
+            peer.replaceTrack(oldTrack, nextTrack, previous);
           }
-          peer.addStream(stream);
-        } catch (e) {
-          console.error('[WebRTC] Failed to replace stream for peer', socketId, e);
-        }
+        });
+      } catch (e) {
+        console.error('[WebRTC] Failed to replace stream for peer', socketId, e);
+      }
+    });
+  }, []);
+
+  /**
+   * Replace one local track across all peers (camera flip swaps in place on
+   * the SAME stream, so replaceLocalStream can't see a kind change).
+   */
+  const replaceLocalTrack = useCallback((oldTrack, newTrack, stream) => {
+    peersRef.current.forEach((peer, socketId) => {
+      if (!peer || peer.destroyed) return;
+      try {
+        peer.replaceTrack(oldTrack, newTrack, stream);
+      } catch (e) {
+        console.error('[WebRTC] Failed to replace local track for peer', socketId, e);
       }
     });
   }, []);
@@ -188,6 +217,7 @@ export function useWebRTC(socket) {
     handleIceCandidate,
     cleanupPeer,
     cleanupAllPeers,
-    replaceLocalStream
+    replaceLocalStream,
+    replaceLocalTrack
   };
 }

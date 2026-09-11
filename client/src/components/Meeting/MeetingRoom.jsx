@@ -54,7 +54,8 @@ export default function MeetingRoom() {
     handleIceCandidate,
     cleanupPeer,
     cleanupAllPeers,
-    replaceLocalStream
+    replaceLocalStream,
+    replaceLocalTrack
   } = useWebRTC(socket);
 
   const media = useMedia();
@@ -203,13 +204,16 @@ export default function MeetingRoom() {
     startJoinFlow();
   };
 
+  const startJoinFlowRef = useRef(startJoinFlow);
+  startJoinFlowRef.current = startJoinFlow;
+
   useEffect(() => {
     if (!localStorage.getItem('webinar-name')) {
       setNeedsName(true);
       setIsJoining(false);
       setIsCheckingRoom(false);
     } else {
-      startJoinFlow();
+      startJoinFlowRef.current();
     }
 
     return () => {
@@ -219,6 +223,7 @@ export default function MeetingRoom() {
       store.getState().resetAll();
       exitFullscreen().catch(() => {});
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [roomId]);
 
   useEffect(() => {
@@ -231,6 +236,7 @@ export default function MeetingRoom() {
       if (stream) {
         cameraStreamRef.current = stream;
         store.getState().setLocalStream(stream);
+        store.getState().setLocalFacingMode(media.facingMode);
       } else {
         setTechNotice('Unable to access camera/microphone. Check your browser permissions and try again.');
       }
@@ -342,9 +348,10 @@ export default function MeetingRoom() {
   const handleFlipCamera = useCallback(async () => {
     const result = await media.flipCamera();
     if (result) {
-      replaceLocalStream(store.getState().localStream);
+      replaceLocalTrack(result.oldTrack, result.newTrack, store.getState().localStream);
+      store.getState().setLocalFacingMode(media.facingMode);
     }
-  }, [media]);
+  }, [media, replaceLocalTrack]);
 
   const handleStopScreenShare = useCallback(() => {
     const storeState = store.getState();
@@ -544,17 +551,18 @@ export default function MeetingRoom() {
   return (
     <div className="app-screen flex flex-col bg-meeting-bg overflow-hidden">
       {/* Top bar */}
-      <div className="px-4 py-2 flex items-center justify-between bg-meeting-surface border-b border-meeting-border h-12">
-        <div className="flex items-center gap-3">
-          <span className="font-semibold text-sm">Webinar</span>
-          {roomName && <span className="text-sm text-gray-300">{roomName}</span>}
-          <span className="text-xs text-gray-400 bg-meeting-card px-2 py-1 rounded font-mono">
+      <div className="px-2 sm:px-4 py-2 flex items-center justify-between bg-meeting-surface border-b border-meeting-border h-12 shrink-0">
+        <div className="flex items-center gap-2 sm:gap-3 min-w-0">
+          <span className="font-semibold text-sm hidden xs:inline">Webinar</span>
+          {roomName && <span className="text-sm text-gray-300 truncate max-w-[40vw] hidden md:inline">{roomName}</span>}
+          <span className="text-xs text-gray-400 bg-meeting-card px-2 py-1 rounded font-mono hidden sm:inline">
             {roomId?.toUpperCase()}
           </span>
           <button
             onClick={() => handleCopyLink(getInviteLink())}
             className="p-1 rounded hover:bg-white/10 text-gray-400 hover:text-white transition-colors"
             title="Copy invite link"
+            aria-label="Copy invite link"
           >
             {copied ? <Check size={14} className="text-green-400" /> : <Copy size={14} />}
           </button>
@@ -566,11 +574,12 @@ export default function MeetingRoom() {
           )}
         </div>
 
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2 sm:gap-3 shrink-0">
           <button
             onClick={toggleFullscreen}
             className="p-1 rounded hover:bg-white/10 text-gray-400 hover:text-white transition-colors"
             title={isFullscreen ? 'Exit full screen' : 'Full screen'}
+            aria-label={isFullscreen ? 'Exit full screen' : 'Enter full screen'}
           >
             {isFullscreen ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
           </button>
@@ -579,7 +588,7 @@ export default function MeetingRoom() {
             className="flex items-center gap-1.5 px-2.5 py-1 rounded bg-meeting-card hover:bg-white/10 text-xs text-gray-300 transition-colors"
           >
             <Link size={13} />
-            Invite
+            <span className="hidden xs:inline">Invite</span>
           </button>
           <span className="flex items-center gap-1 text-xs text-gray-400">
             <Users size={14} />
@@ -616,7 +625,7 @@ export default function MeetingRoom() {
         </div>
 
         {activePanel !== 'none' && activePanel !== 'whiteboard' && (
-          <div className="w-80 animate-slide-in-right">
+          <div className="fixed inset-x-0 bottom-0 top-12 z-40 sm:static sm:inset-auto sm:top-auto sm:z-auto w-full sm:w-80 animate-slide-in-right shadow-2xl sm:shadow-none">
             {activePanel === 'chat' && (
               <ChatPanel
                 onClose={() => togglePanel('chat')}
