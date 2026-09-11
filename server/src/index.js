@@ -232,10 +232,13 @@ app.get('/api/health', (req, res) => {
 // WebRTC TURN credentials (Cloudflare Realtime), fetched by the client before
 // it creates peer connections. Deliberately public - guests joining via an
 // invite link are not logged in, but still need relay credentials.
+// When TURN env vars are absent we still answer 200 with an empty list: the
+// browser treats any non-2xx as a console error, and a missing optional relay
+// is not "service unavailable" - it is a valid empty capability response.
 app.get('/api/turn-credentials', asyncHandler(async (req, res) => {
   const creds = await turn.getTurnCredentials();
-  if (!creds) return res.status(503).json({ error: 'TURN not configured' });
-  res.json(creds);
+  if (!creds) return res.json({ iceServers: [], ttl: 0, configured: false });
+  res.json({ ...creds, configured: true });
 }));
 
 // --- Meeting scheduling API (task 17) ---
