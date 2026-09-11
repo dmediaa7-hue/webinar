@@ -10,6 +10,11 @@ client/dist/
 .env.local
 .env.production.local
 
+# Credentials / secrets
+API KEYS.txt
+*.key
+*.pem
+
 # Logs
 *.log
 dev.log

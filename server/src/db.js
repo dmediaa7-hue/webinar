@@ -10,7 +10,10 @@ if (!fs.existsSync(DATA_DIR)) {
   fs.mkdirSync(DATA_DIR, { recursive: true });
 }
 
-const DEFAULT_DB_PATH = path.join(DATA_DIR, 'webinar.db');
+// DB_PATH env var lets deployments point the database at durable storage
+// (e.g. a Render persistent disk mount at /var/data/webinar.db). Falls back to
+// the repo-relative server/data/webinar.db for local development.
+const DEFAULT_DB_PATH = process.env.DB_PATH || path.join(DATA_DIR, 'webinar.db');
 
 const db = new Database(DEFAULT_DB_PATH);
 db.pragma('journal_mode = WAL');

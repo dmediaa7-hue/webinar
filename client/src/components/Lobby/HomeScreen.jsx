@@ -4,6 +4,7 @@ import Button from '../ui/Button';
 import Input from '../ui/Input';
 import Modal from '../ui/Modal';
 import { SERVER_URL } from '../../utils/constants';
+import apiFetch from '../../utils/api';
 import useStore from '../../store/useStore';
 import {
   Video, Users, Mic, MonitorSmartphone, Clock, Link, Copy, Check, Shield, Calendar,
@@ -77,7 +78,7 @@ export default function HomeScreen() {
     setMeetingsLoading(true);
     setMeetingsError('');
     try {
-      const res = await fetch(`${SERVER_URL}/api/meetings`, { credentials: 'include' });
+      const res = await apiFetch('/api/meetings');
       if (!res.ok) throw new Error('Failed to load meetings');
       const data = await res.json();
       setScheduledMeetings(data.meetings || []);
@@ -108,7 +109,7 @@ export default function HomeScreen() {
       localStorage.setItem('webinar-name', displayName);
       store.getState().setDisplayName(displayName);
 
-      const response = await fetch(`${SERVER_URL}/api/rooms`, {
+      const response = await apiFetch('/api/rooms', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -230,10 +231,9 @@ export default function HomeScreen() {
     setIsScheduling(true);
 
     try {
-      const res = await fetch(`${SERVER_URL}/api/meetings`, {
+      const res = await apiFetch('/api/meetings', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
         body: JSON.stringify({
           title: schedTitle.trim(),
           startTime: startMs,
@@ -261,10 +261,9 @@ export default function HomeScreen() {
     setStartingId(meeting.id);
     setActionError('');
     try {
-      const res = await fetch(`${SERVER_URL}/api/meetings/${meeting.id}/start`, {
+      const res = await apiFetch(`/api/meetings/${meeting.id}/start`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
         body: '{}'
       });
       const data = await res.json().catch(() => ({}));
@@ -290,9 +289,8 @@ export default function HomeScreen() {
   const handleDeleteMeeting = async (meeting) => {
     setActionError('');
     try {
-      const res = await fetch(`${SERVER_URL}/api/meetings/${meeting.id}`, {
-        method: 'DELETE',
-        credentials: 'include'
+      const res = await apiFetch(`/api/meetings/${meeting.id}`, {
+        method: 'DELETE'
       });
       if (!res.ok) throw new Error('Delete failed');
       fetchMeetings();
