@@ -25,6 +25,7 @@ const whiteboard = require('./whiteboard');
 const meetings = require('./meetings');
 const invite = require('./invite');
 const auth = require('./auth');
+const turn = require('./turn');
 const db = require('./db');
 
 const app = express();
@@ -124,7 +125,47 @@ app.use(cors({
   },
   credentials: true
 }));
-app.use(express.json());
+
+const asyncHandler = (fn) => (req, res, next) => {
+  Promise.resolve(fn(req, res, next)).catch(next);
+};
+
+// Recording upload router is mounted on its path BEFORE the global JSON parser
+// so only upload requests get the 200mb limit; all other endpoints use 1mb.
+const uploadRouter = express.Router();
+uploadRouter.use(express.json({ limit: '200mb' }));
+uploadRouter.post('/', (req, res) => {
+  const room = requireRoomHost(req, res, req.params.roomId);
+  if (!room) return;
+  const { folder, filename, data, hostId } = req.body || {};
+  if (!folder || typeof folder !== 'string' || !folder.trim()) {
+    return res.status(400).json({ error: 'folder is required' });
+  }
+  if (!filename || typeof filename !== 'string' || !/^[A-Za-z0-9._-]+$/.test(filename)) {
+    return res.status(400).json({ error: 'Invalid filename' });
+  }
+  if (!data || typeof data !== 'string') {
+    return res.status(400).json({ error: 'data is required' });
+  }
+  if (!hostId || hostId !== room.hostId) {
+    return res.status(403).json({ error: 'Forbidden' });
+  }
+  if (Buffer.byteLength(data, 'base64') > 500 * 1024 * 1024) {
+    return res.status(413).json({ error: 'Recording exceeds 500MB limit' });
+  }
+  try {
+    const result = recording.saveRecording({ roomName: room.name, folder: folder.trim(), filename, base64Data: data });
+    res.json(result);
+  } catch (err) {
+    const status = ['FOLDER_REQUIRED', 'INVALID_FILENAME', 'DATA_REQUIRED', 'FOLDER_UNSAFE'].includes(err.code) ? 400 : 500;
+    res.status(status).json({ error: err.message });
+  }
+});
+app.use('/api/rooms/:roomId/recording/upload', uploadRouter);
+
+// Global JSON parser: 1mb for all non-upload endpoints (recording uploads use
+// the route-specific 200mb parser above).
+app.use(express.json({ limit: '1mb' }));
 app.use(cookieParser());
 
 // --- Authentication routes ---
@@ -160,6 +201,15 @@ app.get('/api/auth/me', auth.requireAuth, (req, res) => {
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', rooms: getRooms().size, timestamp: Date.now() });
 });
+
+// WebRTC TURN credentials (Cloudflare Realtime), fetched by the client before
+// it creates peer connections. Deliberately public - guests joining via an
+// invite link are not logged in, but still need relay credentials.
+app.get('/api/turn-credentials', asyncHandler(async (req, res) => {
+  const creds = await turn.getTurnCredentials();
+  if (!creds) return res.status(503).json({ error: 'TURN not configured' });
+  res.json(creds);
+}));
 
 // --- Meeting scheduling API (task 17) ---
 // hostUserId is always req.user.id on create, so no account can schedule
@@ -326,39 +376,17 @@ app.get('/api/rooms/:roomId/attendance', (req, res) => {
   res.json({ attendance: getAttendance(req.params.roomId) });
 });
 
-const uploadRouter = express.Router();
-uploadRouter.use(express.json({ limit: '200mb' }));
-uploadRouter.post('/api/rooms/:roomId/recording/upload', (req, res) => {
+app.get('/api/rooms/:roomId/recording/status', (req, res) => {
   const room = requireRoomHost(req, res, req.params.roomId);
   if (!room) return;
-  const { folder, filename, data, hostId } = req.body || {};
-  if (!folder || typeof folder !== 'string' || !folder.trim()) {
-    return res.status(400).json({ error: 'folder is required' });
-  }
-  if (!filename || typeof filename !== 'string' || !/^[A-Za-z0-9._-]+$/.test(filename)) {
-    return res.status(400).json({ error: 'Invalid filename' });
-  }
-  if (!data || typeof data !== 'string') {
-    return res.status(400).json({ error: 'data is required' });
-  }
-  if (!hostId || hostId !== room.hostId) {
-    return res.status(403).json({ error: 'Forbidden' });
-  }
-  try {
-    const result = recording.saveRecording({ roomName: room.name, folder: folder.trim(), filename, base64Data: data });
-    res.json(result);
-  } catch (err) {
-    const status = ['FOLDER_REQUIRED', 'INVALID_FILENAME', 'DATA_REQUIRED'].includes(err.code) ? 400 : 500;
-    res.status(status).json({ error: err.message });
-  }
-});
-app.use(uploadRouter);
-
-app.get('/api/rooms/:roomId/recording/status', (req, res) => {
-  const room = getRoom(req.params.roomId);
-  if (!room) return res.status(404).json({ error: 'Room not found' });
-  const rows = db.prepare('SELECT * FROM recordings WHERE room_name = ? ORDER BY id DESC').all(room.name);
-  res.json({ recordings: rows });
+  const rows = db.prepare('SELECT id, room_name, status, created_at, url FROM recordings WHERE room_name = ? ORDER BY id DESC').all(room.name);
+  const recordings = rows.map((r) => ({
+    id: r.id,
+    status: r.status,
+    createdAt: r.created_at,
+    filename: require('path').basename(r.url)
+  }));
+  res.json({ recordings });
 });
 
 // --- Breakout room endpoints (host-gated via x-host-id; task 12) ---
@@ -377,7 +405,7 @@ app.get('/api/rooms/:roomId/breakouts', (req, res) => {
   res.json(result);
 });
 
-app.post('/api/rooms/:roomId/breakouts', async (req, res) => {
+app.post('/api/rooms/:roomId/breakouts', asyncHandler(async (req, res) => {
   const room = requireRoomHost(req, res, req.params.roomId);
   if (!room) return;
   const result = await breakout.createBreakout(
@@ -391,9 +419,9 @@ app.post('/api/rooms/:roomId/breakouts', async (req, res) => {
   }
   broadcastBreakouts(req.params.roomId);
   res.status(201).json(result);
-});
+}));
 
-app.post('/api/rooms/:roomId/breakouts/assign', async (req, res) => {
+app.post('/api/rooms/:roomId/breakouts/assign', asyncHandler(async (req, res) => {
   const room = requireRoomHost(req, res, req.params.roomId);
   if (!room) return;
   const { identity, name } = req.body || {};
@@ -405,9 +433,9 @@ app.post('/api/rooms/:roomId/breakouts/assign', async (req, res) => {
   }
   broadcastBreakouts(req.params.roomId);
   res.json(result);
-});
+}));
 
-app.post('/api/rooms/:roomId/breakouts/return', async (req, res) => {
+app.post('/api/rooms/:roomId/breakouts/return', asyncHandler(async (req, res) => {
   const room = requireRoomHost(req, res, req.params.roomId);
   if (!room) return;
   const { identity } = req.body || {};
@@ -417,9 +445,9 @@ app.post('/api/rooms/:roomId/breakouts/return', async (req, res) => {
   }
   broadcastBreakouts(req.params.roomId);
   res.json(result);
-});
+}));
 
-app.post('/api/rooms/:roomId/breakouts/teardown', async (req, res) => {
+app.post('/api/rooms/:roomId/breakouts/teardown', asyncHandler(async (req, res) => {
   const room = requireRoomHost(req, res, req.params.roomId);
   if (!room) return;
   const result = await breakout.teardownBreakouts(req.params.roomId);
@@ -428,7 +456,7 @@ app.post('/api/rooms/:roomId/breakouts/teardown', async (req, res) => {
   }
   broadcastBreakouts(req.params.roomId);
   res.json(result);
-});
+}));
 
 // Get chat history
 app.get('/api/rooms/:roomId/chat', (req, res) => {
@@ -752,8 +780,17 @@ io.on('connection', (socket) => {
 
       if (wasHost && room.hostId) {
         // leaveRoom() reassigned room.hostId - mirror it on the successor's socket
-        // because host-gated handlers check socket.data.isHost.
-        const successor = io.sockets.sockets.get(room.hostId);
+        // because host-gated handlers check socket.data.isHost. If the successor
+        // already disconnected, promote the first remaining connected participant.
+        let successor = io.sockets.sockets.get(room.hostId);
+        if (!successor) {
+          const nextConnected = Array.from(room.participants.keys()).find((id) => io.sockets.sockets.get(id));
+          if (nextConnected) {
+            room.hostId = nextConnected;
+            successor = io.sockets.sockets.get(nextConnected);
+            room.participants.get(nextConnected).isHost = true;
+          }
+        }
         if (successor) successor.data.isHost = true;
       }
 
@@ -812,9 +849,71 @@ io.on('connection', (socket) => {
   socket.on('toggle-waiting-room', () => {
     const room = getRoom(socket.data.roomId);
     if (!room || !socket.data.isHost) return;
-    const settings = updateRoomSettings(room.id, { waitingRoomEnabled: !room.settings.waitingRoomEnabled });
+    const enabling = !room.settings.waitingRoomEnabled;
+    const settings = updateRoomSettings(room.id, { waitingRoomEnabled: enabling });
     io.to(room.id).emit('room-settings-updated', settings);
+
+    if (!enabling) {
+      // Waiting room turned off: admit everyone currently held, so no joiner
+      // is left stuck outside the meeting with no path in.
+      const waitingList = getWaitingList(room.id);
+      waitingList.forEach((w) => admitWaitingJoiner(room, w));
+      io.to(room.id).emit('waiting-list-updated', { waitingList: getWaitingList(room.id) });
+    }
   });
+
+  function admitWaitingJoiner(room, waiting) {
+    removeWaiting(room.id, waiting.socketId);
+    const target = io.sockets.sockets.get(waiting.socketId);
+    if (!target) return;
+    const participant = joinRoom(room.id, {
+      socketId: waiting.socketId,
+      userId: waiting.userId,
+      displayName: waiting.displayName,
+      isHost: false,
+      isMuted: false,
+      isVideoOff: false,
+      isScreenSharing: false
+    });
+    target.data.roomId = room.id;
+    target.data.displayName = waiting.displayName;
+    target.data.isHost = false;
+    target.data.waiting = false;
+    target.join(room.id);
+
+    const existingParticipants = Array.from(room.participants.values())
+      .filter((p) => p.socketId !== waiting.socketId)
+      .map((p) => ({
+        socketId: p.socketId,
+        userId: p.userId,
+        displayName: p.displayName,
+        isHost: p.isHost,
+        isMuted: p.isMuted,
+        isVideoOff: p.isVideoOff,
+        isScreenSharing: p.isScreenSharing
+      }));
+
+    target.emit('room-joined', {
+      roomId: room.id,
+      roomName: room.name,
+      participants: existingParticipants,
+      isHost: false,
+      hasPassword: roomHasPassword(room),
+      settings: room.settings
+    });
+    target.to(room.id).emit('participant-joined', {
+      participant: {
+        socketId: waiting.socketId,
+        userId: participant.userId,
+        displayName: participant.displayName,
+        isHost: false,
+        isMuted: false,
+        isVideoOff: false,
+        isScreenSharing: false
+      }
+    });
+    io.to(room.id).emit('attendance-updated', { attendance: getAttendance(room.id) });
+  }
 
   // Admit a waiting joiner (host only): promotes them to a participant, puts
   // their socket in the room, and hands them the standard room-joined payload
@@ -830,62 +929,25 @@ io.on('connection', (socket) => {
       ack?.({ success: false, error: 'NOT_WAITING' });
       return;
     }
-    removeWaiting(room.id, targetId);
-
-    const target = io.sockets.sockets.get(targetId);
-    if (target) {
-      const participant = joinRoom(room.id, {
-        socketId: targetId,
-        userId: waiting.userId,
-        displayName: waiting.displayName,
-        isHost: false,
-        isMuted: false,
-        isVideoOff: false,
-        isScreenSharing: false
-      });
-      target.data.roomId = room.id;
-      target.data.displayName = waiting.displayName;
-      target.data.isHost = false;
-      target.data.waiting = false;
-      target.join(room.id);
-
-      const existingParticipants = Array.from(room.participants.values())
-        .filter((p) => p.socketId !== targetId)
-        .map((p) => ({
-          socketId: p.socketId,
-          userId: p.userId,
-          displayName: p.displayName,
-          isHost: p.isHost,
-          isMuted: p.isMuted,
-          isVideoOff: p.isVideoOff,
-          isScreenSharing: p.isScreenSharing
-        }));
-
-      target.emit('room-joined', {
-        roomId: room.id,
-        roomName: room.name,
-        participants: existingParticipants,
-        isHost: false,
-        hasPassword: roomHasPassword(room),
-        settings: room.settings
-      });
-      target.to(room.id).emit('participant-joined', {
-        participant: {
-          socketId: targetId,
-          userId: participant.userId,
-          displayName: participant.displayName,
-          isHost: false,
-          isMuted: false,
-          isVideoOff: false,
-          isScreenSharing: false
-        }
-      });
-      io.to(room.id).emit('attendance-updated', { attendance: getAttendance(room.id) });
-    }
-
+    admitWaitingJoiner(room, waiting);
     io.to(room.id).emit('waiting-list-updated', { waitingList: getWaitingList(room.id) });
     ack?.({ success: true, socketId: targetId, displayName: waiting.displayName });
     console.log(`[✅] ${waiting.displayName} admitted to room ${room.id}`);
+  });
+
+  // Deny a waiting joiner (host only): back to the lobby with a message.
+  socket.on('deny-waiting', ({ targetId } = {}) => {
+    const room = getRoom(socket.data.roomId);
+    if (!room || !socket.data.isHost) return;
+    if (removeWaiting(room.id, targetId)) {
+      const target = io.sockets.sockets.get(targetId);
+      if (target) {
+        target.data.roomId = null;
+        target.data.waiting = false;
+        target.emit('waiting-denied', { message: 'The host did not admit you to this meeting.' });
+      }
+      io.to(room.id).emit('waiting-list-updated', { waitingList: getWaitingList(room.id) });
+    }
   });
 
   // Deny a waiting joiner (host only): back to the lobby with a message.
@@ -938,6 +1000,9 @@ app.use('/api', (req, res) => {
 });
 app.use((err, req, res, next) => {
   console.error('[Server error]', err);
+  if (err.type === 'entity.too.large' || err.status === 413) {
+    return res.status(413).json({ error: 'Payload too large' });
+  }
   res.status(500).json({ error: 'Internal server error' });
 });
 

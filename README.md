@@ -102,6 +102,15 @@ CLIENT_URL=http://localhost:5173
 
 # Secret used to sign auth session cookies
 JWT_SECRET=change-me
+
+# Optional WebRTC TURN relay (Cloudflare Realtime) - required only when
+# neither peer can reach the other directly (symmetric NAT / CGNAT). Get a
+# TURN key at dash.cloudflare.com (Realtime -> TURN), then set its uid and
+# secret. The backend fetches short-lived credentials per hour and serves them
+# to clients at GET /api/turn-credentials. Billed $0.05/real-time GB outbound,
+# only when a call actually needs the relay.
+# CLOUDFLARE_TURN_KEY_ID=
+# CLOUDFLARE_TURN_KEY_API_TOKEN=
 ```
 
 ### Running the App

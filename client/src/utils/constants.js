@@ -1,11 +1,20 @@
 // ICE server configuration for NAT traversal
+//
+// STUN only discovers public addresses — it cannot relay media. When at least
+// one peer is behind a symmetric NAT / CGNAT (mobile data, corporate networks,
+// some ISPs), a direct P2P path cannot be established and the connection fails
+// with "Connection failed." unless a TURN relay server is configured.
+//
+// TURN credentials are fetched at runtime from the backend
+// (GET /api/turn-credentials, Cloudflare Realtime) so they stay short-lived.
+// This static list is only the fallback used when that fetch fails - keep it
+// STUN-only; hardcoding shared TURN credentials here reintroduces the bug
+// this file's history is here to avoid.
 export const ICE_SERVERS = {
   iceServers: [
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' },
     { urls: 'stun:stun2.l.google.com:19302' }
-    // For production, add TURN servers:
-    // { urls: 'turn:your-turn.example.com:3478', username: 'user', credential: 'pass' }
   ]
 };
 

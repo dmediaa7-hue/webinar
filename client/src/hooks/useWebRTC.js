@@ -1,6 +1,7 @@
 ﻿import { useRef, useCallback } from 'react';
 import SimplePeer from 'simple-peer';
-import { ICE_SERVERS, EVENTS } from '../utils/constants';
+import { EVENTS } from '../utils/constants';
+import { getIceConfig } from '../utils/iceConfig';
 import useStore from '../store/useStore';
 
 /**
@@ -15,25 +16,34 @@ export function useWebRTC(socket) {
    * @param {string} socketId - Remote peer's socket ID
    * @param {boolean} initiator - Whether this peer initiates the connection
    */
-  const createPeer = useCallback((socketId, initiator = false) => {
+  const createPeer = useCallback(async (socketId, initiator = false) => {
     const localStream = useStore.getState().localStream;
     if (!localStream) {
       console.warn('[WebRTC] No local stream available');
-      return;
+      return undefined;
     }
 
     const existingPeer = peersRef.current.get(socketId);
     if (existingPeer && !existingPeer.destroyed) {
       // Peer already exists
-      return;
+      return existingPeer;
     }
 
     console.log(`[WebRTC] Creating peer with ${socketId} (initiator: ${initiator})`);
 
+    // ICE config (STUN + short-lived TURN creds) is fixed at construction
+    // time by SimplePeer, so resolve it before creating the peer.
+    const iceServers = await getIceConfig();
+
+    // Re-check after the await: a concurrent createPeer for the same socketId
+    // may have won the race and already stored a peer while this one waited.
+    const racedPeer = peersRef.current.get(socketId);
+    if (racedPeer && !racedPeer.destroyed) return racedPeer;
+
     const peer = new SimplePeer({
       initiator,
       trickle: true,
-      config: ICE_SERVERS,
+      config: { iceServers },
       stream: localStream
     });
 
@@ -86,13 +96,12 @@ export function useWebRTC(socket) {
   /**
    * Handle incoming offer
    */
-  const handleOffer = useCallback((fromSocketId, fromName, sdp) => {
+  const handleOffer = useCallback(async (fromSocketId, fromName, sdp) => {
     console.log('[WebRTC] Received offer from', fromName || fromSocketId);
 
     let peer = peersRef.current.get(fromSocketId);
     if (!peer || peer.destroyed) {
-      // Create peer as non-initiator
-      peer = createPeer(fromSocketId, false);
+      peer = await createPeer(fromSocketId, false);
     }
 
     if (peer && !peer.destroyed) {

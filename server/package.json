@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "node --watch src/index.js",
     "start": "node src/index.js",
-    "test": "node test/auth-runner.js && node test/integration.test.js && node --test test/meetings.test.js test/host-controls.test.js test/recording.test.js test/breakout.test.js test/waiting-room.test.js test/engagement.test.js test/whiteboard.test.js test/invite.test.js"
+    "test": "node test/auth-runner.js && node test/integration.test.js && node --test test/meetings.test.js test/host-controls.test.js test/recording.test.js test/breakout.test.js test/waiting-room.test.js test/engagement.test.js test/whiteboard.test.js test/invite.test.js test/turn.test.js"
   },
   "dependencies": {
     "bcryptjs": "^3.0.3",
