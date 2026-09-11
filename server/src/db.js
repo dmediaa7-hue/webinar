@@ -156,7 +156,11 @@ function createDbClient(opts = {}) {
   const tursoUrl   = opts.url || process.env.TURSO_DATABASE_URL;
   const tursoToken = process.env.TURSO_AUTH_TOKEN;
 
-  // If a Turso URL is provided (production), use embedded-replica mode.
+  // If a Turso URL is provided (production), use embedded-replica mode (local
+  // read cache + periodic sync). Some environments cannot establish the native
+  // sync TLS handshake (e.g. the CA that Turso's chain resolves to is missing
+  // from the platform's trust store) — fall back to remote-only so the server
+  // still boots and persists through Turso.
   if (tursoUrl && !opts.remoteOnly) {
     const localPath = process.env.DB_PATH
       || path.join(__dirname, '..', 'data', 'webinar.db');
@@ -165,26 +169,32 @@ function createDbClient(opts = {}) {
     const dir = path.dirname(localPath);
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 
-    return createClient({
-      url: `file:${localPath}`,
-      syncUrl: tursoUrl,
-      authToken: tursoToken || undefined,
-      syncInterval: 60,   // seconds — sync every minute
-    });
+    try {
+      return createClient({
+        url: `file:${localPath}`,
+        syncUrl: tursoUrl,
+        authToken: tursoToken || undefined,
+        syncInterval: 60,   // seconds — sync every minute
+      });
+    } catch (err) {
+      console.error('[db] Embedded-replica init failed, using remote-only:', err.message);
+    }
   }
 
-  // Local-only fallback (development or tests).
-  const localPath = opts.url
-    || process.env.DB_PATH
-    || path.join(__dirname, '..', 'data', 'webinar.db');
+  // Remote-only (Turso URL) or plain local SQLite file (development/tests).
+  // With a Turso URL every statement round-trips to the cloud database.
+  const remoteUrl = tursoUrl && !opts.remoteOnly ? tursoUrl
+    : opts.url || process.env.DB_PATH
+      || path.join(__dirname, '..', 'data', 'webinar.db');
 
-  if (localPath !== ':memory:' && !localPath.startsWith('file:')) {
-    const dir = path.dirname(localPath);
+  if (remoteUrl !== ':memory:' && !remoteUrl.startsWith('file:') && !remoteUrl.startsWith('libsql://')) {
+    const dir = path.dirname(remoteUrl);
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   }
 
   return createClient({
-    url: localPath.startsWith('file:') ? localPath : `file:${localPath}`,
+    url: remoteUrl.startsWith('file:') || remoteUrl.startsWith('libsql://') ? remoteUrl : `file:${remoteUrl}`,
+    authToken: remoteUrl.startsWith('libsql://') ? (tursoToken || undefined) : undefined,
   });
 }
 
@@ -205,12 +215,17 @@ function wrapClient(client) {
     try {
       return await client.execute({ sql, args });
     } catch (err) {
-      // libSQL reports generic constraint codes on `err.code` and the precise
-      // better-sqlite3-style code on `err.cause.code`. The app's error handlers
-      // (e.g. auth.js duplicate-email → 409) match the precise codes, so lift
-      // them up before rethrowing.
-      if (err && err.code === 'SQLITE_CONSTRAINT' && err.cause && typeof err.cause.code === 'string') {
-        err.code = err.cause.code;
+      if (err && typeof err === 'object') {
+        // Native/embedded path: libSQL reports the precise better-sqlite3-style
+        // code on err.cause.code (e.g. SQLITE_CONSTRAINT_UNIQUE).
+        if (err.cause && typeof err.cause.code === 'string') {
+          err.code = err.cause.code;
+        // Remote Hrana path: structured fields may be empty; the code is only
+        // in the message string. Detect common constraint subtypes.
+        } else if (!err.code && typeof err.message === 'string') {
+          if (err.message.includes('UNIQUE constraint failed')) err.code = 'SQLITE_CONSTRAINT_UNIQUE';
+          if (err.message.includes('FOREIGN KEY constraint failed')) err.code = 'SQLITE_CONSTRAINT_FOREIGN';
+        }
       }
       throw err;
     }
@@ -265,11 +280,12 @@ async function initSchema(handle) {
 const defaultClient = createDbClient();
 const defaultDb = wrapClient(defaultClient);
 
-// Run schema on module load (async IIFE — awaited by callers that need the
-// schema to exist before querying).
-(async () => {
+// Run schema on module load (async IIFE — awaited by the server before it
+// listens, and by callers that need the schema to exist before querying).
+const schemaReady = (async () => {
   await initSchema(defaultDb);
-})().catch((err) => {
+})();
+schemaReady.catch((err) => {
   console.error('[db] Schema initialisation failed:', err);
   process.exit(1);
 });
@@ -298,3 +314,4 @@ module.exports.initSchema = initSchema;
 module.exports.createDbClient = createDbClient;
 module.exports.wrapClient = wrapClient;
 module.exports.SCHEMA_SQL = SCHEMA_SQL;
+module.exports.schemaReady = schemaReady;

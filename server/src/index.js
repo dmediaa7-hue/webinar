@@ -1039,7 +1039,9 @@ app.use((err, req, res, next) => {
   res.status(500).json({ error: 'Internal server error' });
 });
 
-server.listen(PORT, () => {
-  console.log(`\n🚀 Webinar Server running on http://localhost:${PORT}`);
-  console.log(`   Signaling URL: ws://localhost:${PORT}\n`);
+db.schemaReady.then(() => {
+  server.listen(PORT, () => {
+    console.log(`\n🚀 Webinar Server running on http://localhost:${PORT}`);
+    console.log(`   Signaling URL: ws://localhost:${PORT}\n`);
+  });
 });
