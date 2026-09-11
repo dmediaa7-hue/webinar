@@ -22,6 +22,7 @@ import {
 import { SERVER_URL } from '../../utils/constants';
 import useStore from '../../store/useStore';
 import { startRecording, stopRecording } from '../../hooks/useSocket';
+import { createRecordingGrid } from '../../utils/recordingGrid';
 import ReactionPicker from './ReactionPicker';
 
 export default function MeetingControls({
@@ -54,6 +55,7 @@ export default function MeetingControls({
   const chunksRef = useRef([]);
   const audioContextRef = useRef(null);
   const folderHandleRef = useRef(null);
+  const recordingGridRef = useRef(null);
   const folderPickerSupported = typeof window !== 'undefined' && typeof window.showDirectoryPicker === 'function';
 
   const pickRecordingFolder = useCallback(async () => {
@@ -67,6 +69,13 @@ export default function MeetingControls({
         setRecordingStatus('Could not access that folder');
         setTimeout(() => setRecordingStatus(''), 5000);
       }
+    }
+  }, []);
+
+  const disposeRecordingGrid = useCallback(() => {
+    if (recordingGridRef.current) {
+      recordingGridRef.current.stop();
+      recordingGridRef.current = null;
     }
   }, []);
 
@@ -86,7 +95,10 @@ export default function MeetingControls({
     const localStream = store.localStream;
     const screenStream = store.screenShareStream;
     const sourceStream = store.isScreenSharing && screenStream ? screenStream : localStream;
-    if (!sourceStream) {
+    // Recording captures the full participant grid, so any stream at all
+    // (local camera, one remote peer, or a screen share) can anchor it.
+    const anyStream = sourceStream || [...store.participants.values()].some((p) => p.stream);
+    if (!anyStream) {
       setRecordingStatus('No camera/mic stream available to record');
       setTimeout(() => setRecordingStatus(''), 5000);
       return;
@@ -94,6 +106,7 @@ export default function MeetingControls({
 
     let audioDestination = null;
     let mixedStream = sourceStream;
+    let recordingGrid = null;
 
     try {
       audioContextRef.current = new AudioContext();
@@ -114,8 +127,45 @@ export default function MeetingControls({
         }
       });
 
+      // Canvas grid of ALL participants (local + every remote stream) becomes
+      // the recorded video, so recordings are a fullscreen gallery view.
+      try {
+        recordingGrid = createRecordingGrid();
+      } catch (err) {
+        console.error('[Recording] Canvas grid compositor failed, recording local source only:', err);
+      }
+      recordingGridRef.current = recordingGrid;
+
       audioDestination = destination;
-      const videoTracks = sourceStream.getVideoTracks();
+      // Canvas grid tracks are VP8/VP9 (Chrome/Firefox), so WebM is the safe
+      // container there; MP4 stays for Safari (H.264 canvas) and for the
+      // non-composited fallback where the source is a camera/screen track.
+      const candidates = (
+        recordingGrid
+          ? [
+              'video/webm;codecs=vp9,opus',
+              'video/webm;codecs=vp8,opus',
+              'video/webm',
+              'video/mp4;codecs=avc1.42E01E,mp4a.40.2'
+            ]
+          : [
+              'video/mp4;codecs=avc1.42E01E,mp4a.40.2',
+              'video/webm;codecs=vp9,opus',
+              'video/webm'
+            ]
+      ).filter((t) => MediaRecorder.isTypeSupported(t));
+
+      const mimeType = candidates[0];
+      if (!mimeType) {
+        disposeRecordingGrid();
+        setRecordingStatus('Recording is not supported in this browser');
+        setTimeout(() => setRecordingStatus(''), 5000);
+        return;
+      }
+      const extension = mimeType.startsWith('video/mp4') ? 'mp4' : 'webm';
+
+      const gridVideoTracks = recordingGrid ? recordingGrid.stream.getVideoTracks() : [];
+      const videoTracks = gridVideoTracks.length ? gridVideoTracks : sourceStream?.getVideoTracks() || [];
       const audioTracks = destination.stream.getAudioTracks();
       mixedStream = new MediaStream([...videoTracks, ...audioTracks]);
     } catch (err) {
@@ -124,23 +174,9 @@ export default function MeetingControls({
         audioContextRef.current.close().catch(() => {});
         audioContextRef.current = null;
       }
+      disposeRecordingGrid();
       mixedStream = sourceStream;
     }
-
-    // Prefer MP4 (H.264/AAC - Chrome 126+, Safari), else VP9/Opus WebM (Chrome/Firefox),
-    // else bare WebM. The extension follows the container actually recorded.
-    const candidates = [
-      'video/mp4;codecs=avc1.42E01E,mp4a.40.2',
-      'video/webm;codecs=vp9,opus',
-      'video/webm'
-    ].filter((t) => MediaRecorder.isTypeSupported(t));
-    const mimeType = candidates[0];
-    if (!mimeType) {
-      setRecordingStatus('Recording is not supported in this browser');
-      setTimeout(() => setRecordingStatus(''), 5000);
-      return;
-    }
-    const extension = mimeType.startsWith('video/mp4') ? 'mp4' : 'webm';
 
     let recorder;
     try {
@@ -161,6 +197,7 @@ export default function MeetingControls({
         audioContextRef.current.close().catch(() => {});
         audioContextRef.current = null;
       }
+      disposeRecordingGrid();
 
       const blob = new Blob(chunksRef.current, { type: recorder.mimeType });
       const filename = `recording-${roomId}-${Date.now()}.${extension}`;
@@ -219,10 +256,11 @@ export default function MeetingControls({
       recorder.stop();
     }
     recorderRef.current = null;
+    disposeRecordingGrid();
     setLocalRecording(false);
 
     stopRecording();
-  }, []);
+  }, [disposeRecordingGrid]);
 
   const handleToggleRecording = useCallback(() => {
     if (!isHost) return;
