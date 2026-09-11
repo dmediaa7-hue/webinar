@@ -215,8 +215,13 @@ app.post('/api/auth/logout', asyncHandler(async (req, res) => {
   res.json({ ok: true });
 }));
 
-app.get('/api/auth/me', auth.requireAuth, asyncHandler(async (req, res) => {
-  res.json({ user: req.user });
+// Session probe: answers 200 with { user } for a valid session and 200 with
+// { user: null } when logged out. It must NOT 401 - the login screen calls this
+// on every mount to check for a restorable session, and a 401 for anonymous
+// visitors (a) spams the browser console and (b) is semantically wrong for a
+// "who am I" query. Auth-required endpoints keep requireAuth.
+app.get('/api/auth/me', auth.loadUser, asyncHandler(async (req, res) => {
+  res.json({ user: req.user || null });
 }));
 
 // Health check

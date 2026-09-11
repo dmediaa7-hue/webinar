@@ -105,7 +105,9 @@ async function run() {
     assert(res.status === 200, 'Logout returns 200');
 
     res = await client.request('/api/auth/me');
-    assert(res.status === 401, '/me after logout returns 401');
+    assert(res.status === 200, '/me after logout returns 200');
+    const meAfterLogout = await res.json();
+    assert(meAfterLogout.user === null, '/me after logout returns user: null');
 
     res = await client.request('/api/auth/login', {
       method: 'POST',
