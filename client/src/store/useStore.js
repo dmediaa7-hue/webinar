@@ -29,6 +29,9 @@ const useStore = create((set, get) => ({
   displayName: '',
   mySocketId: null,
   localStream: null,
+  // MediaStreamTrack.getSettings().facingMode of the active local camera:
+  // 'user' (front), 'environment' (rear), '' (desktop). Drives self-tile mirroring.
+  localFacingMode: '',
   isMuted: false,
   isVideoOff: false,
   isConnecting: false,
@@ -57,6 +60,9 @@ const useStore = create((set, get) => ({
   isScreenSharing: false,
   screenShareStream: null,
 
+  // Transient toast notification (replaces blocking alert() on socket errors)
+  toast: null,
+
   // Recording
   isRecording: false,
 
@@ -79,6 +85,7 @@ const useStore = create((set, get) => ({
   setDisplayName: (displayName) => set({ displayName }),
   setMySocketId: (mySocketId) => set({ mySocketId }),
   setLocalStream: (localStream) => set({ localStream }),
+  setLocalFacingMode: (facingMode) => set({ localFacingMode: facingMode }),
   setIsMuted: (isMuted) => set({ isMuted }),
   setIsVideoOff: (isVideoOff) => set({ isVideoOff }),
   setIsConnecting: (isConnecting) => set({ isConnecting }),
@@ -308,6 +315,17 @@ const useStore = create((set, get) => ({
 
   setActivePanel: (panel) => set({ activePanel: panel }),
 
+  showToast: (message) => {
+    clearTimeout(get().toastTimer);
+    set({ toast: message });
+    const timer = setTimeout(() => set({ toast: null }), 5000);
+    set({ toastTimer: timer });
+  },
+  dismissToast: () => {
+    clearTimeout(get().toastTimer);
+    set({ toast: null, toastTimer: null });
+  },
+
   setIsTyping: (isTyping) => {
     set({ isTyping });
     if (!isTyping) set({ typingUsers: new Set() });
@@ -340,6 +358,7 @@ const useStore = create((set, get) => ({
     waitingList: [],
     displayName: '',
     localStream: null,
+    localFacingMode: '',
     isMuted: false,
     isVideoOff: false,
     isConnecting: false,
@@ -357,7 +376,9 @@ const useStore = create((set, get) => ({
     reactions: new Map(),
     recentReactions: [],
     polls: [],
-    qaQuestions: []
+    qaQuestions: [],
+    toast: null,
+    toastTimer: null
   })
 }));
 

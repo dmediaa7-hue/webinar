@@ -9,6 +9,7 @@ export default function VideoGrid() {
 
   const participants = useStore((s) => s.participants);
   const localStream = useStore((s) => s.localStream);
+  const localFacingMode = useStore((s) => s.localFacingMode);
   const isMuted = useStore((s) => s.isMuted);
   const isVideoOff = useStore((s) => s.isVideoOff);
   const isScreenSharing = useStore((s) => s.isScreenSharing);
@@ -73,6 +74,7 @@ export default function VideoGrid() {
       participant={{ socketId: mySocketId, displayName, isHost }}
       stream={localStream}
       isLocal={true}
+      facingMode={localFacingMode}
       isMuted={isMuted}
       isVideoOff={isVideoOff}
       isScreenSharing={false}
@@ -135,9 +137,9 @@ export default function VideoGrid() {
 
   if (mode === 'pinned') {
     return (
-      <div ref={containerRef} className="h-full w-full p-3 overflow-hidden flex gap-3">
+      <div ref={containerRef} className="h-full w-full p-2 sm:p-3 overflow-hidden flex gap-2 sm:gap-3">
         <div
-          className="flex-1 min-w-0 grid gap-3"
+          className="flex-1 min-w-0 grid gap-2 sm:gap-3"
           style={{
             gridTemplateColumns: `repeat(${screenLayout.cols}, minmax(0, 1fr))`,
             gridTemplateRows: `repeat(${screenLayout.rows}, minmax(0, 1fr))`,
@@ -147,7 +149,7 @@ export default function VideoGrid() {
         </div>
 
         {allCameraTiles.length > 0 && (
-          <div className="w-60 shrink-0 overflow-y-auto grid gap-3 auto-rows-fr">
+          <div className="w-28 sm:w-40 md:w-60 shrink-0 overflow-y-auto grid gap-2 sm:gap-3 auto-rows-fr">
             {allCameraTiles}
           </div>
         )}
@@ -156,9 +158,9 @@ export default function VideoGrid() {
   }
 
   return (
-    <div ref={containerRef} className="h-full w-full p-3 overflow-hidden">
+    <div ref={containerRef} className="h-full w-full p-2 sm:p-3 overflow-hidden">
       <div
-        className="h-full w-full grid gap-3"
+        className="h-full w-full grid gap-2 sm:gap-3"
         style={{
           gridTemplateColumns: `repeat(${layout.cols}, minmax(0, 1fr))`,
           gridTemplateRows: `repeat(${layout.rows}, minmax(0, 1fr))`,

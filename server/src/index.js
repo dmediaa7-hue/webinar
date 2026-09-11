@@ -805,6 +805,7 @@ io.on('connection', (socket) => {
         const room = getRoom(roomId);
         if (room) io.to(roomId).emit('waiting-list-updated', { waitingList: getWaitingList(roomId) });
       }
+      socket.leave(roomId); // not part of the socket room, but keep membership in sync
       socket.data.roomId = null;
       socket.data.waiting = false;
       return;
@@ -838,6 +839,10 @@ io.on('connection', (socket) => {
         newHost: room.hostId
       });
       io.to(roomId).emit('attendance-updated', { attendance: getAttendance(roomId) });
+
+      // Singleton client keeps the socket alive after leave-room; detach it
+      // to stop stale room broadcasts and prevent dual-room subscriptions.
+      socket.leave(roomId);
 
       console.log(`[-] ${displayName || socket.id} left room ${roomId}`);
       // Empty-room cleanup (after 5 min) is handled inside rooms.js

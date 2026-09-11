@@ -2,8 +2,9 @@ import React, { useRef, useEffect } from 'react';
 import { getInitials } from '../../utils/constants';
 import { MicOff, VideoOff, MonitorUp } from 'lucide-react';
 import { filterActiveReactions } from '../../utils/reactionCodec';
+import { shouldMirrorLocalVideo } from '../../utils/mirror';
 
-export default function VideoCard({ participant, stream, isLocal, isMuted, isVideoOff, isScreenSharing, reactions = [] }) {
+export default function VideoCard({ participant, stream, isLocal, facingMode = '', isMuted, isVideoOff, isScreenSharing, reactions = [] }) {
   const videoRef = useRef(null);
 
   const displayName = participant?.displayName || 'Guest';
@@ -13,11 +14,20 @@ export default function VideoCard({ participant, stream, isLocal, isMuted, isVid
     const el = videoRef.current;
     if (el && stream && !isVideoOff) {
       el.srcObject = stream;
+    } else if (el && el.srcObject) {
+      el.srcObject = null;
     }
   }, [stream, isVideoOff]);
 
+  useEffect(() => {
+    return () => {
+      const el = videoRef.current;
+      if (el && el.srcObject) el.srcObject = null;
+    };
+  }, []);
+
   const hasVideo = Boolean(stream && !isVideoOff);
-  const mirrorClass = !isScreenSharing && isLocal ? ' mirrored-video' : '';
+  const mirrorClass = !isScreenSharing && isLocal && shouldMirrorLocalVideo(facingMode) ? ' mirrored-video' : '';
 
   const activeReactions = filterActiveReactions(reactions, Date.now());
 
@@ -54,6 +64,9 @@ export default function VideoCard({ participant, stream, isLocal, isMuted, isVid
               </span>
             </div>
             <p className="text-sm text-gray-400">{displayName}</p>
+            {participant?.connecting && (
+              <p className="text-xs text-primary animate-pulse mt-1">Connecting...</p>
+            )}
           </div>
         </div>
       )}

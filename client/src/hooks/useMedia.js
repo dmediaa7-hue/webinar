@@ -1,6 +1,14 @@
 ﻿import { useState, useEffect, useCallback, useRef } from 'react';
 import { MEDIA_CONSTRAINTS } from '../utils/constants';
 
+// Read the camera's facing mode ('user' | 'environment' | '' | ...) from the
+// current video track. Empty string when there is no video track or the
+// hardware reports no facing direction (desktop webcams).
+function readFacingMode(stream) {
+  const track = stream?.getVideoTracks?.()[0];
+  return (track && track.getSettings?.().facingMode) || '';
+}
+
 /**
  * Hook for managing camera/microphone access
  */
@@ -8,6 +16,7 @@ export function useMedia() {
   const [stream, setStream] = useState(null);
   const [isMuted, setIsMuted] = useState(false);
   const [isVideoOff, setIsVideoOff] = useState(false);
+  const [facingMode, setFacingMode] = useState('');
   const [error, setError] = useState(null);
   const [devices, setDevices] = useState({ cameras: [], microphones: [] });
   const streamRef = useRef(null);
@@ -56,6 +65,7 @@ export function useMedia() {
         }
         streamRef.current = localStream;
         setStream(localStream);
+        setFacingMode(readFacingMode(localStream));
         return localStream;
       } catch (err) {
         if (acquisitionId !== acquisitionIdRef.current) return null;
@@ -147,6 +157,7 @@ export function useMedia() {
     streamRef.current.getVideoTracks().forEach(track => track.stop());
     streamRef.current.removeTrack(currentTrack);
     streamRef.current.addTrack(newTrack);
+    setFacingMode(readFacingMode(streamRef.current));
     return { oldTrack: currentTrack, newTrack };
   }, []);
 
@@ -179,6 +190,7 @@ export function useMedia() {
     stream,
     isMuted,
     isVideoOff,
+    facingMode,
     error,
     devices,
     startMedia,

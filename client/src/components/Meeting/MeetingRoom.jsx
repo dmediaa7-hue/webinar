@@ -392,8 +392,15 @@ export default function MeetingRoom() {
     store.getState().setLeftRoom(true);
     leaveRoom();
     cleanupAllPeers();
+    // Release the display-capture stream too if the user is screen sharing -
+    // otherwise the "sharing" session survives the leave until the tab closes.
+    const storeState = store.getState();
+    if (storeState.screenShareStream) {
+      storeState.screenShareStream.getTracks().forEach((t) => t.stop());
+      storeState.setScreenShareStream(null);
+    }
     media.stopStream();
-    store.getState().resetAll();
+    storeState.resetAll();
     exitFullscreen().catch(() => {});
     navigate('/');
   }, [navigate]);

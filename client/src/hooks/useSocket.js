@@ -114,7 +114,7 @@ export function useSocket() {
 
       socket.on(EVENTS.ERROR, ({ message }) => {
         console.error('[Socket] Error:', message);
-        alert(message);
+        useStore.getState().showToast(message || 'An error occurred');
       });
 
       socket.on(EVENTS.RECORDING_STARTED, () => {
@@ -181,17 +181,30 @@ export function useSocket() {
 
 // Handle being kicked - navigate away
 const handleKicked = () => {
-  useStore.getState().resetAll();
-  useStore.getState().setIsConnecting(false);
+  const state = useStore.getState();
+  stopAllLocalTracks(state);
+  state.resetAll();
+  state.setIsConnecting(false);
   window.location.href = '/?kicked=true';
 };
 
 // Handle being denied from the waiting room - back to the lobby with a banner
 const handleDenied = () => {
-  useStore.getState().resetAll();
-  useStore.getState().setIsConnecting(false);
+  const state = useStore.getState();
+  stopAllLocalTracks(state);
+  state.resetAll();
+  state.setIsConnecting(false);
   window.location.href = '/?denied=true';
 };
+
+// Stop every locally captured track (camera/mic + screen-share) so devices
+// release immediately instead of waiting for the redirect's page unload.
+function stopAllLocalTracks(state) {
+  const streams = [state.localStream, state.screenShareStream];
+  streams.forEach((stream) => {
+    if (stream) stream.getTracks().forEach((track) => track.stop());
+  });
+}
 
 export function joinRoom(roomId, displayName, password = null) {
   return new Promise((resolve, reject) => {
