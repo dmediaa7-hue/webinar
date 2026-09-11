@@ -90,9 +90,9 @@ export function useWebRTC(socket) {
     peer.on('error', (err) => {
       // "User-Initiated Abort" fires whenever a peer is intentionally destroyed
       // (leaving the meeting, participant disconnects, page closed) - normal.
+      // The 'close' handler below owns that teardown, so just return and let
+      // it run; doing it here logs "Peer closed" twice for the same peer.
       if (err.message && err.message.startsWith('User-Initiated Abort')) {
-        console.log('[WebRTC] Peer closed for', socketId);
-        cleanupPeer(socketId);
         return;
       }
       // Real failures (e.g. ICE "Connection failed." when STUN cannot traverse
