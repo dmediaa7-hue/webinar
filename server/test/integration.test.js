@@ -48,14 +48,16 @@ async function runTest() {
   try {
     await waitForServer(proc);
 
-    // TURN endpoint must answer 200 even without Cloudflare env vars: clients
-    // treat non-2xx as a console error, and absent optional relay is empty config.
+    // TURN endpoint always answers 200 with the free Open Relay relay (no env
+    // vars needed): clients treat non-2xx as a console error.
     console.log('Testing turn-credentials endpoint...');
     const turnRes = await fetch(`${SERVER_URL}/api/turn-credentials`);
-    assert(turnRes.status === 200, 'turn-credentials returns 200 without TURN env');
+    assert(turnRes.status === 200, 'turn-credentials returns 200');
     const turnBody = await turnRes.json();
-    assert(Array.isArray(turnBody.iceServers) && turnBody.iceServers.length === 0, 'empty iceServers when TURN unconfigured');
-    assert(turnBody.configured === false, 'configured flag false');
+    assert(Array.isArray(turnBody.iceServers) && turnBody.iceServers.length === 1, 'returns the Open Relay iceServers');
+    assert(turnBody.iceServers[0].username && turnBody.iceServers[0].credential, 'returns a time-limited credential');
+    assert(typeof turnBody.ttl === 'number' && turnBody.ttl > 0, 'ttl is a positive number');
+    assert(turnBody.configured === true, 'configured flag true');
 
     // Connect client A (host)
     console.log('Testing client connections...');

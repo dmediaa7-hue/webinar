@@ -103,14 +103,11 @@ CLIENT_URL=http://localhost:5173
 # Secret used to sign auth session cookies
 JWT_SECRET=change-me
 
-# Optional WebRTC TURN relay (Cloudflare Realtime) - required only when
-# neither peer can reach the other directly (symmetric NAT / CGNAT). Get a
-# TURN key at dash.cloudflare.com (Realtime -> TURN), then set its uid and
-# secret. The backend fetches short-lived credentials per hour and serves them
-# to clients at GET /api/turn-credentials. Billed $0.05/real-time GB outbound,
-# only when a call actually needs the relay.
-# CLOUDFLARE_TURN_KEY_ID=
-# CLOUDFLARE_TURN_KEY_API_TOKEN=
+# WebRTC TURN relay - free by default, no env vars needed. The server serves
+# the Open Relay public relay (openrelay.metered.ca, 20 GB/month free) with
+# time-limited credentials at GET /api/turn-credentials. Required only when
+# neither peer can reach the other directly (symmetric NAT / CGNAT).
+# CLOUDFLARE_TURN_KEY_ID / _API_TOKEN are no longer supported.
 
 # Turso (libSQL) remote database - REQUIRED for persistence on Render (its
 # free tier has no persistent disk, so a local SQLite file is wiped on every
