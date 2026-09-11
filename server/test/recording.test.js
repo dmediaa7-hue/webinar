@@ -172,11 +172,31 @@ test('upload endpoint stores the file and status returns the row; non-host is 40
     assert.equal(result.path, path.join(dir, filename), 'response carries the absolute path');
     assert.equal(fs.existsSync(result.path), true, 'file exists on disk after upload');
 
-    const statusRes = await fetch(`${SERVER_URL}/api/rooms/${roomId}/recording/status`);
+    // Regression: real .webm recordings are base64 blobs far above the 100kb
+    // express.json() default - the global parser used to 413 the request before
+    // the route ran (remapped to 500), so a ~1.37MB base64 payload must now
+    // succeed and land on disk.
+    const bigFilename = 'large.webm';
+    const bigRes = await fetch(`${SERVER_URL}/api/rooms/${roomId}/recording/upload`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-host-id': host.id },
+      body: JSON.stringify({
+        folder: dir,
+        filename: bigFilename,
+        data: Buffer.alloc(1024 * 1024, 7).toString('base64'),
+        hostId: host.id
+      })
+    });
+    assert.equal(bigRes.status, 200, 'large host upload succeeds (limit raised)');
+    assert.equal(fs.existsSync(path.join(dir, bigFilename)), true, 'large file exists on disk');
+
+    const statusRes = await fetch(`${SERVER_URL}/api/rooms/${roomId}/recording/status`, {
+      headers: { 'x-host-id': host.id }
+    });
     assert.equal(statusRes.status, 200, 'status lookup succeeds');
     const status = await statusRes.json();
     assert.equal(status.recordings.length >= 1, true, 'status returns uploaded rows');
-    const statusRow = status.recordings.find((r) => r.url === result.path);
+    const statusRow = status.recordings.find((r) => r.filename === filename);
     assert.ok(statusRow, 'status contains the freshly uploaded row');
     assert.equal(statusRow.status, 'completed');
   } finally {

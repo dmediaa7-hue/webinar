@@ -132,7 +132,9 @@ const asyncHandler = (fn) => (req, res, next) => {
 
 // Recording upload router is mounted on its path BEFORE the global JSON parser
 // so only upload requests get the 200mb limit; all other endpoints use 1mb.
-const uploadRouter = express.Router();
+// mergeParams: true so req.params.roomId from the mount path
+// /api/rooms/:roomId/recording/upload is visible inside this sub-router.
+const uploadRouter = express.Router({ mergeParams: true });
 uploadRouter.use(express.json({ limit: '200mb' }));
 uploadRouter.post('/', (req, res) => {
   const room = requireRoomHost(req, res, req.params.roomId);
