@@ -22,3 +22,25 @@ export function computeGridMode(screenCount, cameraCount) {
   if (screenCount > 0) return 'pinned';
   return 'uniform';
 }
+
+// Recording column thresholds (recording spec): how many columns the recording
+// canvas compositor uses for a uniform grid of `count` tiles.
+export function computeRecordingColumns(count) {
+  if (count <= 2) return 2;
+  if (count <= 4) return 2;
+  if (count <= 9) return 3;
+  return 4;
+}
+
+// Fit `cameraCount` camera tiles into a right-hand strip of stripWidth x
+// stripHeight. Reuses computeLayout so tile sizing matches the live grid;
+// cellW/cellH are the gap-free fill sizes for the whole strip.
+export function computePinnedLayout(stripWidth, stripHeight, cameraCount) {
+  const layout = cameraCount <= 0 ? { cols: 1, rows: 1 } : computeLayout(cameraCount, stripWidth, stripHeight);
+  return {
+    cols: layout.cols,
+    rows: layout.rows,
+    cellW: stripWidth / layout.cols,
+    cellH: stripHeight / layout.rows
+  };
+}

@@ -1,14 +1,14 @@
 // Canvas compositor that renders every participant's video into a
 // fullscreen-style grid for recording, mirroring the on-screen VideoGrid
 // (Gallery view) instead of recording only the local camera/screen track.
-import { computeLayout } from './gridLayout';
+import { computeRecordingColumns, computePinnedLayout } from './gridLayout';
 import { shouldMirrorLocalVideo } from './mirror';
 import { getInitials } from './constants';
 import useStore from '../store/useStore';
 
 const WIDTH = 1920;
 const HEIGHT = 1080;
-const FPS = 15;
+const FPS = 30;
 const GAP = 8;
 const TILE_BG = '#1e293b';
 const PAGE_BG = '#0f172a';
@@ -36,19 +36,32 @@ export function createRecordingGrid() {
   const syncTiles = () => {
     const state = useStore.getState();
     const myId = state.mySocketId;
-    const localStream =
-      state.isScreenSharing && state.screenShareStream ? state.screenShareStream : state.localStream;
+    const hostName = state.displayName || localStorage.getItem('webinar-name') || 'Guest';
+    const isSharing = Boolean(state.isScreenSharing && state.screenShareStream);
 
-    const tiles = [
-      {
-        key: 'local',
-        stream: localStream,
-        name: state.displayName || localStorage.getItem('webinar-name') || 'Guest',
-        isLocal: true,
-        mirror: !(state.isScreenSharing && state.screenShareStream) && shouldMirrorLocalVideo(state.localFacingMode),
-        hasVideo: Boolean(localStream && !state.isVideoOff && localStream.getVideoTracks().length)
-      }
-    ];
+    const tiles = [];
+    if (isSharing) {
+      // Screen share is its own tile; never swapped into the camera slot.
+      tiles.push({
+        key: 'screen',
+        stream: state.screenShareStream,
+        name: `${hostName}'s screen`,
+        isLocal: false,
+        mirror: false,
+        isScreen: true,
+        hasVideo: Boolean(state.screenShareStream.getVideoTracks().length)
+      });
+    }
+
+    // The local camera is always the camera stream; mirroring only applies here.
+    tiles.push({
+      key: 'local',
+      stream: state.localStream,
+      name: hostName,
+      isLocal: true,
+      mirror: shouldMirrorLocalVideo(state.localFacingMode),
+      hasVideo: Boolean(state.localStream && !state.isVideoOff && state.localStream.getVideoTracks().length)
+    });
 
     state.participants.forEach((p, socketId) => {
       if (socketId === myId) return;
@@ -149,13 +162,39 @@ export function createRecordingGrid() {
     const tiles = syncTiles();
     if (!tiles.length) return;
 
-    const layout = computeLayout(tiles.length, WIDTH, HEIGHT);
-    const cellW = (WIDTH - GAP * (layout.cols + 1)) / layout.cols;
-    const cellH = (HEIGHT - GAP * (layout.rows + 1)) / layout.rows;
+    const screenTile = tiles.find((t) => t.isScreen);
+    const cameras = screenTile ? tiles.filter((t) => !t.isScreen) : tiles;
+
+    if (screenTile) {
+      // Pinned mode: screen fills the left ~70%, cameras stack in a right strip.
+      const screenW = Math.round(WIDTH * 0.7) - GAP;
+      const stripX = screenW + GAP;
+      const stripW = WIDTH - stripX;
+
+      drawTile(screenTile, 0, 0, screenW, HEIGHT);
+
+      if (cameras.length) {
+        const layout = computePinnedLayout(stripW, HEIGHT, cameras.length);
+        const cellW = (stripW - GAP * (layout.cols + 1)) / layout.cols;
+        const cellH = (HEIGHT - GAP * (layout.rows + 1)) / layout.rows;
+        cameras.forEach((tile, i) => {
+          const col = i % layout.cols;
+          const row = Math.floor(i / layout.cols);
+          drawTile(tile, stripX + col * (cellW + GAP), GAP + row * (cellH + GAP), cellW, cellH);
+        });
+      }
+      return;
+    }
+
+    // Uniform mode: spec column rules; a lone participant fills the frame.
+    const cols = tiles.length === 1 ? 1 : computeRecordingColumns(tiles.length);
+    const rows = Math.ceil(tiles.length / cols);
+    const cellW = (WIDTH - GAP * (cols + 1)) / cols;
+    const cellH = (HEIGHT - GAP * (rows + 1)) / rows;
 
     tiles.forEach((tile, i) => {
-      const col = i % layout.cols;
-      const row = Math.floor(i / layout.cols);
+      const col = i % cols;
+      const row = Math.floor(i / cols);
       drawTile(tile, GAP + col * (cellW + GAP), GAP + row * (cellH + GAP), cellW, cellH);
     });
   };
