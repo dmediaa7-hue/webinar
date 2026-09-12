@@ -224,19 +224,31 @@ app.get('/api/auth/me', auth.loadUser, asyncHandler(async (req, res) => {
   res.json({ user: req.user || null });
 }));
 
+// Client IPv4 probe: reports the caller's public address as the server sees
+// it (x-forwarded-for when proxied, socket address otherwise). The login
+// screen uses it to decide whether to offer account creation, so this stays
+// dependency-free - no third-party IP lookup service involved.
+app.get('/api/client-ip', (req, res) => {
+  const fwd = req.headers['x-forwarded-for'];
+  const raw = (typeof fwd === 'string' && fwd.trim())
+    ? fwd.split(',')[0].trim()
+    : (req.socket?.remoteAddress || 'unknown');
+  res.json({ ip: raw.replace(/^::ffff:/, ''), public: Boolean(fwd) });
+});
+
 // Health check
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', rooms: getRooms().size, timestamp: Date.now() });
 });
 
-// WebRTC TURN credentials (free Open Relay public relay), fetched by the
-// client before it creates peer connections. Deliberately public - guests
-// joining via an invite link are not logged in, but still need relay creds.
-// The relay needs no account or env vars, so this always answers 200 with
-// real iceServers (a non-2xx would surface as a console error per client).
+// WebRTC TURN credentials, fetched by the client before peer creation.
+// Public by design - invite-link guests are not logged in. Providers in
+// priority order: static env relay (TURN_URLS/USERNAME/CREDENTIAL), Cloudflare
+// Realtime (CLOUDFLARE_TURN_KEY_ID/_API_TOKEN), then the free Open Relay -
+// served only when a live STUN probe confirms it answers. `configured:false`
+// means STUN-only (NAT/CGNAT peers cannot connect); the client warns clearly.
 app.get('/api/turn-credentials', asyncHandler(async (req, res) => {
-  const creds = await turn.getTurnCredentials();
-  res.json({ ...creds, configured: true });
+  res.json(await turn.getTurnCredentials());
 }));
 
 // --- Meeting scheduling API (task 17) ---
@@ -477,6 +489,18 @@ app.get('/api/recordings', auth.requireAuth, asyncHandler(async (req, res) => {
     url: r.url ? `/api/recordings/${r.id}/file` : null
   }));
   res.json({ recordings });
+}));
+
+// Registered before /api/recordings/:id so 'processing' wins the route match.
+app.delete('/api/recordings/processing', auth.requireAuth, asyncHandler(async (req, res) => {
+  const result = await recording.deleteProcessingRecordings(db);
+  res.json({ ok: true, deleted: result.deleted });
+}));
+
+app.delete('/api/recordings/:id', auth.requireAuth, asyncHandler(async (req, res) => {
+  const result = await recording.deleteRecording({ id: req.params.id }, db);
+  if (!result.ok) return res.status(404).json({ error: 'Not found' });
+  res.json({ ok: true });
 }));
 
 app.get('/api/recordings/:id/file', asyncHandler(async (req, res) => {

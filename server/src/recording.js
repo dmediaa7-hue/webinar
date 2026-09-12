@@ -110,4 +110,33 @@ async function saveRecording({ roomName, folder, filename, base64Data, recording
   return { id: Number(info.lastInsertRowid), path: filePath };
 }
 
-module.exports = { saveRecording, startRecording, stopRecording, cancelRecording, failRecording };
+async function deleteRecording({ id }, db = defaultDb) {
+  const row = await db.get('SELECT url FROM recordings WHERE id = ?', id);
+  if (!row) return { ok: false };
+  if (row.url) {
+    try {
+      fs.rmSync(row.url, { force: true });
+    } catch (err) {
+      console.warn('Failed to remove recording file:', err.message);
+    }
+  }
+  await db.run('DELETE FROM recordings WHERE id = ?', id);
+  return { ok: true };
+}
+
+async function deleteProcessingRecordings(db = defaultDb) {
+  const rows = await db.all("SELECT id, url FROM recordings WHERE status = 'processing'");
+  for (const row of rows) {
+    if (row.url) {
+      try {
+        fs.rmSync(row.url, { force: true });
+      } catch (err) {
+        console.warn('Failed to remove recording file:', err.message);
+      }
+    }
+    await db.run('DELETE FROM recordings WHERE id = ?', row.id);
+  }
+  return { deleted: rows.length };
+}
+
+module.exports = { saveRecording, startRecording, stopRecording, cancelRecording, failRecording, deleteRecording, deleteProcessingRecordings };
