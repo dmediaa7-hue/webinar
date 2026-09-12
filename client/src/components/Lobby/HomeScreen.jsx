@@ -3,12 +3,13 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import Button from '../ui/Button';
 import Input from '../ui/Input';
 import Modal from '../ui/Modal';
+import RecordingsSection from './RecordingsSection';
 import { SERVER_URL } from '../../utils/constants';
 import apiFetch from '../../utils/api';
 import useStore from '../../store/useStore';
 import {
   Video, Users, Mic, MonitorSmartphone, Clock, Link, Copy, Check, Shield, Calendar,
-  LogOut, CalendarPlus, Play, Trash2, Download, ExternalLink, CalendarClock
+  LogOut, CalendarPlus, Play, Trash2, Download, ExternalLink, CalendarClock, MonitorPlay
 } from 'lucide-react';
 import {
   MEETING_STATUS,
@@ -16,16 +17,6 @@ import {
   formatMeetingTime,
   toLocalInputValue
 } from '../../utils/schedule';
-
-function statusMeta(meeting) {
-  const status = computeMeetingStatus(meeting);
-  const meta = {
-    [MEETING_STATUS.ENDED]: { label: 'Ended', cls: 'bg-gray-700/40 text-gray-400' },
-    [MEETING_STATUS.LIVE]: { label: 'Live now', cls: 'bg-green-600/20 text-green-400' },
-    [MEETING_STATUS.UPCOMING]: { label: 'Upcoming', cls: 'bg-primary/20 text-primary' }
-  };
-  return meta[status];
-}
 
 export default function HomeScreen() {
   const navigate = useNavigate();
@@ -307,18 +298,19 @@ export default function HomeScreen() {
 
   return (
     <div className="app-screen-min bg-meeting-bg flex flex-col">
-      <header className="px-4 sm:px-8 py-5 flex items-center gap-2">
-        <Video className="text-primary" size={28} />
-        <h1 className="text-2xl font-bold">Webinar</h1>
-        <span className="text-sm text-gray-400 ml-2 hidden sm:block">Video Conferencing</span>
-        <div className="ml-auto flex items-center gap-3">
-          <span className="text-sm text-gray-400">Signed in as <span className="text-gray-200 font-medium">{user?.name || username || 'Guest'}</span></span>
+      <header className="px-4 sm:px-8 py-4 sm:py-5 flex items-center gap-2">
+        <Video className="text-primary" size={24} />
+        <h1 className="text-xl sm:text-2xl font-bold">Webinar</h1>
+        <span className="text-sm text-gray-400 ml-2 hidden md:block">Video Conferencing</span>
+        <div className="ml-auto flex items-center gap-2 sm:gap-3">
+          <span className="text-xs sm:text-sm text-gray-400 hidden sm:block">Signed in as <span className="text-gray-200 font-medium">{user?.name || username || 'Guest'}</span></span>
           <button
             onClick={handleLogout}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm bg-meeting-surface border border-meeting-border hover:bg-white/10 hover:border-red-500/40 text-gray-300 hover:text-red-400 transition-colors"
+            className="flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-lg text-xs sm:text-sm bg-meeting-surface border border-meeting-border hover:bg-white/10 hover:border-red-500/40 text-gray-300 hover:text-red-400 transition-colors"
+            aria-label="Logout"
           >
             <LogOut size={15} />
-            Logout
+            <span className="hidden xs:inline">Logout</span>
           </button>
         </div>
       </header>
@@ -416,15 +408,15 @@ export default function HomeScreen() {
             {error && <p className="text-red-500 text-sm">{error}</p>}
           </div>
 
-          <div className="grid grid-cols-2 gap-6">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
             {[
               { icon: <Video size={24} />, title: 'HD Video', desc: 'Crystal-clear video calls' },
               { icon: <Mic size={24} />, title: 'Clear Audio', desc: 'Noise-cancelled sound' },
               { icon: <MonitorSmartphone size={24} />, title: 'Screen Share', desc: 'Present any screen' },
               { icon: <Shield size={24} />, title: 'Password Protected', desc: 'Optional meeting passwords' }
-            ].map((feature, i) => (
+            ].map((feature) => (
               <div
-                key={i}
+                key={feature.title}
                 className="p-5 bg-meeting-surface border border-meeting-border rounded-xl hover:border-primary/40 transition-colors"
               >
                 <div className="text-primary mb-3">{feature.icon}</div>
@@ -556,10 +548,18 @@ export default function HomeScreen() {
             </div>
           )}
         </section>
+
+        {/* Recordings */}
+        <section className="max-w-5xl w-full mt-12">
+          <h3 className="text-lg font-semibold flex items-center gap-2">
+            <MonitorPlay size={18} className="text-primary" /> Recordings
+          </h3>
+          <RecordingsSection />
+        </section>
       </main>
 
       <footer className="px-8 py-4 text-center text-sm text-gray-500">
-        Free video meetings for up to unlimited participants
+        Video meetings/Conferencing for up to unlimited participants | Developed by Arindam Raychoudhury
       </footer>
 
       {/* Share Link Modal (shown after room is created) */}
