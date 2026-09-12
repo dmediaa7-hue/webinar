@@ -139,7 +139,7 @@ uploadRouter.use(express.json({ limit: '200mb' }));
 uploadRouter.post('/', asyncHandler(async (req, res) => {
   const room = requireRoomHost(req, res, req.params.roomId);
   if (!room) return;
-  const { folder, filename, data, hostId } = req.body || {};
+  const { folder, filename, data, hostId, recordingId } = req.body || {};
   if (!folder || typeof folder !== 'string' || !folder.trim()) {
     return res.status(400).json({ error: 'folder is required' });
   }
@@ -156,7 +156,7 @@ uploadRouter.post('/', asyncHandler(async (req, res) => {
     return res.status(413).json({ error: 'Recording exceeds 500MB limit' });
   }
   try {
-    const result = await recording.saveRecording({ roomName: room.name, folder: folder.trim(), filename, base64Data: data });
+    const result = await recording.saveRecording({ roomName: room.name, folder: folder.trim(), filename, base64Data: data, recordingId });
     res.json(result);
   } catch (err) {
     const status = ['FOLDER_REQUIRED', 'INVALID_FILENAME', 'DATA_REQUIRED', 'FOLDER_UNSAFE'].includes(err.code) ? 400 : 500;
@@ -407,14 +407,89 @@ app.get('/api/rooms/:roomId/attendance', (req, res) => {
 app.get('/api/rooms/:roomId/recording/status', asyncHandler(async (req, res) => {
   const room = requireRoomHost(req, res, req.params.roomId);
   if (!room) return;
-  const rows = await db.all('SELECT id, room_name, status, created_at, url FROM recordings WHERE room_name = ? ORDER BY id DESC', room.name);
+  const rows = await db.all(
+    'SELECT id, room_name, status, started_at, created_at, ended_at, duration_ms, url FROM recordings WHERE room_name = ? ORDER BY id DESC',
+    room.name
+  );
   const recordings = rows.map((r) => ({
     id: r.id,
     status: r.status,
     createdAt: r.created_at,
-    filename: require('path').basename(r.url)
+    startedAt: r.started_at,
+    endedAt: r.ended_at,
+    durationMs: r.duration_ms,
+    filename: require('path').basename(r.url || ''),
+    url: r.url ? `/api/recordings/${r.id}/file` : null
   }));
   res.json({ recordings });
+}));
+
+// --- Recording lifecycle (host-gated via x-host-id) ---
+
+app.post('/api/rooms/:roomId/recording/start', asyncHandler(async (req, res) => {
+  const room = requireRoomHost(req, res, req.params.roomId);
+  if (!room) return;
+  const result = await recording.startRecording({ roomName: room.name, startedBy: room.hostId }, db);
+  room.isRecording = true;
+  io.to(room.id).emit('recording-started');
+  res.json({ ok: true, recordingId: result.id });
+}));
+
+app.post('/api/rooms/:roomId/recording/stop', asyncHandler(async (req, res) => {
+  const room = requireRoomHost(req, res, req.params.roomId);
+  if (!room) return;
+  const { recordingId } = req.body || {};
+  await recording.stopRecording({ id: recordingId }, db);
+  room.isRecording = false;
+  io.to(room.id).emit('recording-stopped');
+  res.json({ ok: true });
+}));
+
+app.post('/api/rooms/:roomId/recording/cancel', asyncHandler(async (req, res) => {
+  const room = requireRoomHost(req, res, req.params.roomId);
+  if (!room) return;
+  const { recordingId } = req.body || {};
+  await recording.cancelRecording({ id: recordingId }, db);
+  io.to(room.id).emit('recording-stopped');
+  res.json({ ok: true });
+}));
+
+app.post('/api/rooms/:roomId/recording/fail', asyncHandler(async (req, res) => {
+  const room = requireRoomHost(req, res, req.params.roomId);
+  if (!room) return;
+  const { recordingId } = req.body || {};
+  await recording.failRecording({ id: recordingId }, db);
+  res.json({ ok: true });
+}));
+
+// Global recording listing (Home screen module; authenticated session, no host role).
+app.get('/api/recordings', auth.requireAuth, asyncHandler(async (req, res) => {
+  const rows = await db.all('SELECT id, room_name, status, started_at, created_at, ended_at, duration_ms, url FROM recordings ORDER BY id DESC LIMIT 100');
+  const recordings = rows.map((r) => ({
+    id: r.id,
+    roomName: r.room_name,
+    status: r.status,
+    createdAt: r.created_at,
+    startedAt: r.started_at,
+    endedAt: r.ended_at,
+    durationMs: r.duration_ms,
+    filename: require('path').basename(r.url || ''),
+    url: r.url ? `/api/recordings/${r.id}/file` : null
+  }));
+  res.json({ recordings });
+}));
+
+app.get('/api/recordings/:id/file', asyncHandler(async (req, res) => {
+  const row = await db.get('SELECT url FROM recordings WHERE id = ?', req.params.id);
+  if (!row || !row.url) return res.status(404).json({ error: 'Not found' });
+  const fileUrl = row.url;
+  const ext = require('path').extname(fileUrl).toLowerCase();
+  const contentType = ext === '.mp4' ? 'video/mp4' : 'video/webm';
+  res.setHeader('Content-Type', contentType);
+  res.setHeader('Content-Disposition', 'inline');
+  res.sendFile(fileUrl, (err) => {
+    if (err) res.status(404).json({ error: 'Not found' });
+  });
 }));
 
 // --- Breakout room endpoints (host-gated via x-host-id; task 12) ---

@@ -66,7 +66,11 @@ const SCHEMA_SQL = `
     url TEXT,
     status TEXT NOT NULL,
     started_at INTEGER,
-    created_at INTEGER NOT NULL
+    created_at INTEGER NOT NULL,
+    ended_at INTEGER,
+    duration_ms INTEGER,
+    folder TEXT,
+    started_by TEXT
   );
 
   CREATE TABLE IF NOT EXISTS polls (
@@ -274,6 +278,26 @@ function wrapClient(client) {
 async function initSchema(handle) {
   const target = handle || defaultDb;
   await target.exec(SCHEMA_SQL);
+  await migrateRecordingsTable(target);
+}
+
+// Idempotent ALTER migration: add missing columns so an existing database
+// upgrades without data loss. Safe to run repeatedly.
+async function migrateRecordingsTable(handle) {
+  const target = handle || defaultDb;
+  const cols = await target.all('PRAGMA table_info(recordings)');
+  const existing = new Set(cols.map(c => c.name));
+  const needed = [
+    ['ended_at', 'INTEGER'],
+    ['duration_ms', 'INTEGER'],
+    ['folder', 'TEXT'],
+    ['started_by', 'TEXT']
+  ];
+  for (const [name, type] of needed) {
+    if (!existing.has(name)) {
+      await target.exec(`ALTER TABLE recordings ADD COLUMN ${name} ${type}`);
+    }
+  }
 }
 
 // ── Default (singleton) client ───────────────────────────────────────────────
@@ -303,6 +327,7 @@ async function createDatabase(dbPath) {
   const client = createDbClient({ url: resolvedPath, remoteOnly: true });
   const wrapped = wrapClient(client);
   await initSchema(wrapped);
+  await migrateRecordingsTable(wrapped);
   return wrapped;
 }
 
@@ -311,6 +336,7 @@ async function createDatabase(dbPath) {
 module.exports = defaultDb;
 module.exports.createDatabase = createDatabase;
 module.exports.initSchema = initSchema;
+module.exports.migrateRecordingsTable = migrateRecordingsTable;
 module.exports.createDbClient = createDbClient;
 module.exports.wrapClient = wrapClient;
 module.exports.SCHEMA_SQL = SCHEMA_SQL;

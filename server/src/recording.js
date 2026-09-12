@@ -24,7 +24,40 @@ function isPathUnsafe(dir) {
   return false;
 }
 
-async function saveRecording({ roomName, folder, filename, base64Data }, db = defaultDb) {
+async function startRecording({ roomName, startedBy }, db = defaultDb) {
+  const now = Date.now();
+  const info = await db.run(`
+    INSERT INTO recordings (room_name, status, started_at, created_at, started_by)
+    VALUES (?, ?, ?, ?, ?)
+  `, String(roomName || ''), 'recording', now, now, String(startedBy || ''));
+  return { id: Number(info.lastInsertRowid) };
+}
+
+async function stopRecording({ id }, db = defaultDb) {
+  await db.run(`
+    UPDATE recordings SET status = 'processing', ended_at = ?
+    WHERE id = ? AND status = 'recording'
+  `, Date.now(), id);
+  return { ok: true };
+}
+
+async function cancelRecording({ id }, db = defaultDb) {
+  await db.run(`
+    UPDATE recordings SET status = 'cancelled', ended_at = ?
+    WHERE id = ? AND status IN ('recording', 'processing')
+  `, Date.now(), id);
+  return { ok: true };
+}
+
+async function failRecording({ id }, db = defaultDb) {
+  await db.run(`
+    UPDATE recordings SET status = 'failed', ended_at = ?
+    WHERE id = ? AND status IN ('recording', 'processing')
+  `, Date.now(), id);
+  return { ok: true };
+}
+
+async function saveRecording({ roomName, folder, filename, base64Data, recordingId }, db = defaultDb) {
   const dir = String(folder || '').trim();
   if (!dir) {
     const err = new Error('folder is required');
@@ -51,6 +84,24 @@ async function saveRecording({ roomName, folder, filename, base64Data }, db = de
   const filePath = path.join(dir, String(filename));
   fs.writeFileSync(filePath, Buffer.from(base64Data, 'base64'));
 
+  if (recordingId) {
+    const row = await db.get('SELECT ended_at, started_at FROM recordings WHERE id = ?', recordingId);
+    if (!row) {
+      const err = new Error('Recording not found');
+      err.code = 'RECORDING_NOT_FOUND';
+      throw err;
+    }
+    const now = Date.now();
+    const endedAt = row.ended_at || now;
+    await db.run(`
+      UPDATE recordings SET
+        url = ?, status = 'completed', folder = ?,
+        ended_at = ?, duration_ms = ? - started_at
+      WHERE id = ?
+    `, filePath, dir, endedAt, endedAt, recordingId);
+    return { id: Number(recordingId), path: filePath };
+  }
+
   const info = await db.run(`
     INSERT INTO recordings (room_name, url, status, created_at)
     VALUES (?, ?, ?, ?)
@@ -59,4 +110,4 @@ async function saveRecording({ roomName, folder, filename, base64Data }, db = de
   return { id: Number(info.lastInsertRowid), path: filePath };
 }
 
-module.exports = { saveRecording };
+module.exports = { saveRecording, startRecording, stopRecording, cancelRecording, failRecording };
