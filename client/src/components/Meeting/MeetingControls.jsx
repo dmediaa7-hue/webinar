@@ -24,6 +24,27 @@ import useStore from '../../store/useStore';
 import { startRecording, stopRecording } from '../../hooks/useSocket';
 import { createRecordingGrid } from '../../utils/recordingGrid';
 import ReactionPicker from './ReactionPicker';
+import Modal from '../ui/Modal';
+
+function fireRecordingFail(roomId, hostId, recordingId) {
+  if (!recordingId) return;
+  fetch(`${SERVER_URL}/api/rooms/${roomId}/recording/fail`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-host-id': hostId },
+    credentials: 'include',
+    body: JSON.stringify({ recordingId })
+  }).catch(() => {});
+}
+
+function formatElapsed(ms) {
+  const totalSeconds = Math.floor(Math.max(0, ms) / 1000);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  const mm = String(minutes).padStart(2, '0');
+  const ss = String(seconds).padStart(2, '0');
+  return hours > 0 ? `${hours}:${mm}:${ss}` : `${mm}:${ss}`;
+}
 
 export default function MeetingControls({
   isMuted,
@@ -51,12 +72,18 @@ export default function MeetingControls({
   const [localRecording, setLocalRecording] = useState(false);
   const [recordingStatus, setRecordingStatus] = useState('');
   const [showRecordingFolder, setShowRecordingFolder] = useState(false);
+  const [consentGiven, setConsentGiven] = useState(false);
+  const [showConsentModal, setShowConsentModal] = useState(false);
+  const [recordingElapsed, setRecordingElapsed] = useState(0);
   const recorderRef = useRef(null);
   const chunksRef = useRef([]);
   const audioContextRef = useRef(null);
   const folderHandleRef = useRef(null);
   const recordingGridRef = useRef(null);
+  const startedAtRef = useRef(null);
+  const recordingIdRef = useRef(null);
   const folderPickerSupported = typeof window !== 'undefined' && typeof window.showDirectoryPicker === 'function';
+  const participantCount = useStore((s) => s.participants.size);
 
   const pickRecordingFolder = useCallback(async () => {
     try {
@@ -79,7 +106,7 @@ export default function MeetingControls({
     }
   }, []);
 
-  const handleStartRecording = useCallback(() => {
+  const handleStartRecording = useCallback(async () => {
     const store = useStore.getState();
     const roomId = store.roomId;
     const hostId = store.mySocketId;
@@ -104,9 +131,38 @@ export default function MeetingControls({
       return;
     }
 
+    recordingIdRef.current = null;
+    let res;
+    try {
+      res = await fetch(`${SERVER_URL}/api/rooms/${roomId}/recording/start`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-host-id': hostId },
+        credentials: 'include',
+        body: '{}'
+      });
+    } catch (err) {
+      console.error('[Recording] Server authorization failed:', err);
+      setRecordingStatus('Could not reach the server to authorize recording');
+      setTimeout(() => setRecordingStatus(''), 5000);
+      return;
+    }
+    if (res.status === 403) {
+      setRecordingStatus('Only the host can start a recording');
+      setTimeout(() => setRecordingStatus(''), 5000);
+      return;
+    }
+    if (!res.ok) {
+      setRecordingStatus('Could not reach the server to authorize recording');
+      setTimeout(() => setRecordingStatus(''), 5000);
+      return;
+    }
+    const startData = await res.json();
+    recordingIdRef.current = startData && startData.recordingId ? startData.recordingId : null;
+
     let audioDestination = null;
     let mixedStream = sourceStream;
     let recordingGrid = null;
+    let mimeType = null;
 
     try {
       audioContextRef.current = new AudioContext();
@@ -155,14 +211,13 @@ export default function MeetingControls({
             ]
       ).filter((t) => MediaRecorder.isTypeSupported(t));
 
-      const mimeType = candidates[0];
+      mimeType = candidates[0];
       if (!mimeType) {
         disposeRecordingGrid();
         setRecordingStatus('Recording is not supported in this browser');
         setTimeout(() => setRecordingStatus(''), 5000);
         return;
       }
-      const extension = mimeType.startsWith('video/mp4') ? 'mp4' : 'webm';
 
       const gridVideoTracks = recordingGrid ? recordingGrid.stream.getVideoTracks() : [];
       const videoTracks = gridVideoTracks.length ? gridVideoTracks : sourceStream?.getVideoTracks() || [];
@@ -180,8 +235,9 @@ export default function MeetingControls({
 
     let recorder;
     try {
-      recorder = new MediaRecorder(mixedStream, { mimeType });
-    } catch {
+      recorder = mimeType ? new MediaRecorder(mixedStream, { mimeType }) : new MediaRecorder(mixedStream);
+    } catch (err) {
+      console.error('[Recording] MediaRecorder failed to start:', err);
       setRecordingStatus('Failed to start recording in this browser');
       setTimeout(() => setRecordingStatus(''), 5000);
       return;
@@ -199,8 +255,11 @@ export default function MeetingControls({
       }
       disposeRecordingGrid();
 
+      const recordingId = recordingIdRef.current;
+      recordingIdRef.current = null;
+
       const blob = new Blob(chunksRef.current, { type: recorder.mimeType });
-      const filename = `recording-${roomId}-${Date.now()}.${extension}`;
+      const filename = `recording-${roomId}-${Date.now()}.${recorder.mimeType.startsWith('video/mp4') ? 'mp4' : 'webm'}`;
       chunksRef.current = [];
 
       const folderHandle = folderHandleRef.current;
@@ -226,17 +285,19 @@ export default function MeetingControls({
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'x-host-id': hostId },
             credentials: 'include',
-            body: JSON.stringify({ folder, filename, data: base64Data, hostId })
+            body: JSON.stringify({ folder, filename, data: base64Data, hostId, recordingId })
           });
           if (res.ok) {
             const data = await res.json();
             setRecordingStatus(`Saved to ${data.path || folder || filename}`);
           } else {
-            setRecordingStatus('Upload failed');
+            fireRecordingFail(roomId, hostId, recordingId);
+            setRecordingStatus('Failed to save recording');
           }
         }
       } catch (err) {
         console.error('[Recording] Save error:', err);
+        fireRecordingFail(roomId, hostId, recordingId);
         setRecordingStatus('Failed to save recording');
       }
       setTimeout(() => setRecordingStatus(''), 5000);
@@ -251,6 +312,9 @@ export default function MeetingControls({
   }, [recordingFolder]);
 
   const handleStopRecording = useCallback(() => {
+    const store = useStore.getState();
+    const roomId = store.roomId;
+    const hostId = store.mySocketId;
     const recorder = recorderRef.current;
     if (recorder && recorder.state !== 'inactive') {
       recorder.stop();
@@ -258,6 +322,17 @@ export default function MeetingControls({
     recorderRef.current = null;
     disposeRecordingGrid();
     setLocalRecording(false);
+    startedAtRef.current = null;
+
+    const recordingId = recordingIdRef.current;
+    if (recordingId) {
+      fetch(`${SERVER_URL}/api/rooms/${roomId}/recording/stop`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-host-id': hostId },
+        credentials: 'include',
+        body: JSON.stringify({ recordingId })
+      }).catch(() => {});
+    }
 
     stopRecording();
   }, [disposeRecordingGrid]);
@@ -266,10 +341,18 @@ export default function MeetingControls({
     if (!isHost) return;
     if (isRecording || localRecording) {
       handleStopRecording();
+    } else if (!consentGiven) {
+      setShowConsentModal(true);
     } else {
       handleStartRecording();
     }
-  }, [isHost, isRecording, localRecording, handleStartRecording, handleStopRecording]);
+  }, [isHost, isRecording, localRecording, consentGiven, handleStartRecording, handleStopRecording]);
+
+  const handleAgreeToRecording = useCallback(() => {
+    setConsentGiven(true);
+    setShowConsentModal(false);
+    handleStartRecording();
+  }, [handleStartRecording]);
 
   useEffect(() => {
     const handleVisibility = () => {
@@ -296,8 +379,37 @@ export default function MeetingControls({
     };
   }, []);
 
+  useEffect(() => {
+    if (isRecording || localRecording) {
+      if (!startedAtRef.current) {
+        startedAtRef.current = Date.now();
+      }
+      const tick = () => {
+        if (startedAtRef.current) {
+          setRecordingElapsed(Date.now() - startedAtRef.current);
+        }
+      };
+      tick();
+      const intervalId = setInterval(tick, 1000);
+      return () => clearInterval(intervalId);
+    }
+    setRecordingElapsed(0);
+    startedAtRef.current = null;
+    return undefined;
+  }, [isRecording, localRecording]);
+
   return (
     <div className="px-2 sm:px-4 py-2 sm:py-3 bg-meeting-surface border-t border-meeting-border">
+      {(isRecording || localRecording) && (
+        <div className="max-w-3xl mx-auto mb-2 flex items-center justify-center">
+          <span className="flex items-center gap-1.5 text-xs font-semibold text-red-500 bg-meeting-card border border-red-500/30 rounded-full px-2.5 py-1">
+            <span className="w-2 h-2 rounded-full bg-red-500 recording-pulse" />
+            REC
+            <span className="text-red-400 tabular-nums">{formatElapsed(recordingElapsed)}</span>
+          </span>
+        </div>
+      )}
+
       {/* Recording status */}
       {recordingStatus && (
         <div className="max-w-3xl mx-auto mb-2 text-xs text-gray-400 text-center truncate">{recordingStatus}</div>
@@ -556,6 +668,50 @@ export default function MeetingControls({
           {mediaConnected && <ReactionPicker />}
         </div>
       </div>
+
+      {isHost && showConsentModal && (
+        <Modal
+          isOpen={showConsentModal}
+          onClose={() => setShowConsentModal(false)}
+          title="Recording consent"
+        >
+          <div className="space-y-5">
+            <div className="flex items-start gap-3">
+              <div className="w-10 h-10 rounded-full bg-red-600/20 flex items-center justify-center shrink-0">
+                <CircleDot size={20} className="recording-pulse text-red-500" />
+              </div>
+              <div className="space-y-2">
+                <p className="text-sm text-gray-200">
+                  Video and audio of{' '}
+                  <span className="font-semibold text-white">
+                    all {participantCount} participant{participantCount === 1 ? '' : 's'}
+                  </span>{' '}
+                  in this meeting will be recorded.
+                </p>
+                <p className="text-sm text-gray-400">
+                  Everyone in the meeting has been notified that a recording is starting. As the
+                  host, please confirm you have consent from all participants before recording.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex gap-3 pt-1">
+              <button
+                onClick={() => setShowConsentModal(false)}
+                className="flex-1 font-medium rounded-lg transition-all duration-200 cursor-pointer select-none px-4 py-2.5 text-sm bg-meeting-surface hover:bg-white/10 text-gray-200 border border-meeting-border"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleAgreeToRecording}
+                className="flex-1 font-medium rounded-lg transition-all duration-200 cursor-pointer select-none px-4 py-2.5 text-sm bg-primary hover:bg-primary-dark text-white"
+              >
+                I agree — Start recording
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
     </div>
   );
 }
