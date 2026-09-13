@@ -4,6 +4,7 @@
 import { computeRecordingColumns, computePinnedLayout } from './gridLayout';
 import { shouldMirrorLocalVideo } from './mirror';
 import { getInitials } from './constants';
+import { drawBroadcastOverlay } from './broadcastOverlay';
 import useStore from '../store/useStore';
 
 const WIDTH = 1920;
@@ -53,14 +54,23 @@ export function createRecordingGrid() {
       });
     }
 
-    // The local camera is always the camera stream; mirroring only applies here.
+    // The local camera tile must use the dedicated camera stream, NOT localStream:
+    // during a screen share localStream is the display stream, so using it would
+    // draw the screen a second time (recursive capture) and drop the host's camera.
+    const screenStream = state.screenShareStream;
+    const isScreenActive = Boolean(state.isScreenSharing && screenStream);
+    let localCamStream = state.localCameraStream || state.localStream;
+    if (isScreenActive && localCamStream === state.localStream) {
+      localCamStream = null; // no separate camera stream -> avatar, never a second screen tile
+    }
     tiles.push({
       key: 'local',
-      stream: state.localStream,
+      stream: localCamStream,
       name: hostName,
       isLocal: true,
       mirror: shouldMirrorLocalVideo(state.localFacingMode),
-      hasVideo: Boolean(state.localStream && !state.isVideoOff && state.localStream.getVideoTracks().length)
+      hasVideo: Boolean(localCamStream && !state.isVideoOff && localCamStream.getVideoTracks().length),
+      isMuted: Boolean(state.isMuted)
     });
 
     state.participants.forEach((p, socketId) => {
@@ -71,6 +81,7 @@ export function createRecordingGrid() {
         name: p.displayName || 'Guest',
         isLocal: false,
         mirror: false,
+        isMuted: Boolean(p.isMuted),
         hasVideo: Boolean(p.stream && !p.isVideoOff && p.stream.getVideoTracks().length)
       });
     });
@@ -153,6 +164,18 @@ export function createRecordingGrid() {
       ctx.fillStyle = '#cbd5e1';
       ctx.fillText(tile.name, x + cellW / 2, y + cellH / 2 + fs * 0.6);
     }
+
+    if (tile.isMuted) {
+      const bw = Math.max(44, Math.round(cellW * 0.14));
+      const bh = Math.max(18, Math.round(cellH * 0.06));
+      ctx.fillStyle = 'rgba(239, 68, 68, 0.9)';
+      ctx.fillRect(x + 6, y + 6, bw, bh);
+      ctx.fillStyle = '#fff';
+      ctx.font = `600 ${Math.max(11, Math.round(bh * 0.55))}px system-ui, sans-serif`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('Muted', x + 6 + bw / 2, y + 6 + bh / 2);
+    }
   };
 
   const draw = () => {
@@ -160,7 +183,10 @@ export function createRecordingGrid() {
     ctx.fillRect(0, 0, WIDTH, HEIGHT);
 
     const tiles = syncTiles();
-    if (!tiles.length) return;
+    if (!tiles.length) {
+      drawBroadcastOverlay(ctx, WIDTH, HEIGHT, useStore.getState().broadcastOverlay, performance.now());
+      return;
+    }
 
     const screenTile = tiles.find((t) => t.isScreen);
     const cameras = screenTile ? tiles.filter((t) => !t.isScreen) : tiles;
@@ -183,6 +209,7 @@ export function createRecordingGrid() {
           drawTile(tile, stripX + col * (cellW + GAP), GAP + row * (cellH + GAP), cellW, cellH);
         });
       }
+      drawBroadcastOverlay(ctx, WIDTH, HEIGHT, useStore.getState().broadcastOverlay, performance.now());
       return;
     }
 
@@ -197,6 +224,8 @@ export function createRecordingGrid() {
       const row = Math.floor(i / cols);
       drawTile(tile, GAP + col * (cellW + GAP), GAP + row * (cellH + GAP), cellW, cellH);
     });
+
+    drawBroadcastOverlay(ctx, WIDTH, HEIGHT, useStore.getState().broadcastOverlay, performance.now());
   };
 
   const loop = (ts) => {
