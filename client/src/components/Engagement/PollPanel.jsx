@@ -107,6 +107,10 @@ export default function PollPanel({ onClose, roomId }) {
     const closeMsg = buildPollClose({ pollId: poll.pollId, creatorId: mySocketId });
     useStore.getState().applyPollMessage(closeMsg);
     send(encodePollMessage(closeMsg));
+    api(`/api/rooms/${roomId}/polls/${poll.pollId}/close`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-host-id': mySocketId }
+    }).catch(() => {});
   };
 
   const setOption = (index, value) =>
@@ -212,7 +216,7 @@ export default function PollPanel({ onClose, roomId }) {
                   const isMyChoice = myVote === index;
                   return (
                     <button
-                      key={index}
+                      key={`${poll.pollId}-${index}`}
                       onClick={() => castVote(poll, index)}
                       disabled={poll.isClosed}
                       className={`relative w-full text-left px-3 py-2 rounded-lg border text-sm transition-all ${

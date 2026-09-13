@@ -79,7 +79,8 @@ const SCHEMA_SQL = `
     question TEXT NOT NULL,
     options TEXT NOT NULL,
     host_identity TEXT NOT NULL,
-    created_at INTEGER NOT NULL
+    created_at INTEGER NOT NULL,
+    is_closed INTEGER NOT NULL DEFAULT 0
   );
 
   CREATE TABLE IF NOT EXISTS poll_votes (
@@ -279,6 +280,17 @@ async function initSchema(handle) {
   const target = handle || defaultDb;
   await target.exec(SCHEMA_SQL);
   await migrateRecordingsTable(target);
+  await migratePollsTable(target);
+}
+
+// Idempotent ALTER migration: add missing columns so an existing database
+// upgrades without data loss. Safe to run repeatedly.
+async function migratePollsTable(handle) {
+  const target = handle || defaultDb;
+  const cols = await target.all('PRAGMA table_info(polls)');
+  if (!cols.some((c) => c.name === 'is_closed')) {
+    await target.exec('ALTER TABLE polls ADD COLUMN is_closed INTEGER NOT NULL DEFAULT 0');
+  }
 }
 
 // Idempotent ALTER migration: add missing columns so an existing database
@@ -328,6 +340,7 @@ async function createDatabase(dbPath) {
   const wrapped = wrapClient(client);
   await initSchema(wrapped);
   await migrateRecordingsTable(wrapped);
+  await migratePollsTable(wrapped);
   return wrapped;
 }
 
@@ -337,6 +350,7 @@ module.exports = defaultDb;
 module.exports.createDatabase = createDatabase;
 module.exports.initSchema = initSchema;
 module.exports.migrateRecordingsTable = migrateRecordingsTable;
+module.exports.migratePollsTable = migratePollsTable;
 module.exports.createDbClient = createDbClient;
 module.exports.wrapClient = wrapClient;
 module.exports.SCHEMA_SQL = SCHEMA_SQL;

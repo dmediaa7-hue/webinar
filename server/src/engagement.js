@@ -32,7 +32,8 @@ function pollRowToPoll(row) {
     question: row.question,
     options: JSON.parse(row.options),
     hostIdentity: row.host_identity,
-    createdAt: row.created_at
+    createdAt: row.created_at,
+    isClosed: Boolean(row.is_closed)
   };
 }
 
@@ -86,6 +87,7 @@ async function createPoll({ roomName, question, options, hostIdentity }, db = de
 async function recordPollVote({ pollId, voterIdentity, optionIndex }, db = defaultDb) {
   const poll = await getPoll(pollId, db);
   if (!poll) return { ok: false, error: 'POLL_NOT_FOUND' };
+  if (poll.isClosed) return { ok: false, error: 'POLL_CLOSED' };
   const idx = Number(optionIndex);
   if (!Number.isInteger(idx) || idx < 0 || idx >= poll.options.length) {
     return { ok: false, error: 'OPTION_OUT_OF_RANGE' };
@@ -128,6 +130,19 @@ async function getPollResults(pollId, db = defaultDb) {
     totalVotes: votes.length,
     votes: votes.map((v) => ({ voterIdentity: v.voter_identity, optionIndex: v.option_index }))
   };
+}
+
+/**
+ * Mark a poll closed; no further votes are accepted (persisted so the state
+ * survives a refresh). Idempotent - closing an already-closed poll is a no-op.
+ */
+async function closePoll(pollId, db = defaultDb) {
+  const poll = await getPoll(pollId, db);
+  if (!poll) return { ok: false, error: 'POLL_NOT_FOUND' };
+  if (!poll.isClosed) {
+    await db.run('UPDATE polls SET is_closed = 1 WHERE id = ?', pollId);
+  }
+  return { ok: true, poll: await getPollResults(pollId, db) };
 }
 
 async function getPoll(pollId, db = defaultDb) {
@@ -247,6 +262,7 @@ async function listQuestions(roomName, db = defaultDb) {
 module.exports = {
   createPoll,
   recordPollVote,
+  closePoll,
   getPoll,
   getPollResults,
   listPolls,

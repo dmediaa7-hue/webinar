@@ -641,6 +641,16 @@ app.post('/api/rooms/:roomId/polls/:pollId/votes', asyncHandler(async (req, res)
   res.json({ results: result.results });
 }));
 
+// Close a poll (host-only, x-host-id gate); persisted so the closed state
+// survives a refresh - required for the tally to stay final.
+app.post('/api/rooms/:roomId/polls/:pollId/close', asyncHandler(async (req, res) => {
+  const room = requireRoomHost(req, res, req.params.roomId);
+  if (!room) return;
+  const result = await engagement.closePoll(req.params.pollId);
+  if (!result.ok) return res.status(404).json({ error: result.error });
+  res.json({ poll: result.poll });
+}));
+
 // Poll list with tallies (refresh restore / host download; room-scoped).
 app.get('/api/rooms/:roomId/polls', asyncHandler(async (req, res) => {
   const room = getRoom(req.params.roomId);
