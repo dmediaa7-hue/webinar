@@ -81,7 +81,18 @@ export const EVENTS = {
   WAITING_LIST_UPDATED: 'waiting-list-updated',
 
   // Breakout rooms (received when the host changes the layout)
-  BREAKOUT_UPDATED: 'breakout-updated'
+  BREAKOUT_UPDATED: 'breakout-updated',
+
+  // Live RTMP streaming (host publishes the composited grid to an ingest URL)
+  RTMP_START: 'start-rtmp',
+  RTMP_CHUNK: 'rtmp-chunk',
+  RTMP_STOP: 'stop-rtmp',
+  RTMP_STARTED: 'rtmp-started',
+  RTMP_STOPPED: 'rtmp-stopped',
+  RTMP_ERROR: 'rtmp-error',
+
+  // Collab channel carrying the host's broadcast-graphics config
+  BROADCAST_OVERLAY_CHANNEL: 'broadcast-overlay'
 };
 
 // Media constraints for camera/mic
