@@ -78,6 +78,8 @@ async function createRoom(roomId, hostName = 'Host', hostSocketId = null, passwo
     passwordHash: password ? hashPassword(password) : null,
     isRecording: false,
     recordingStartTime: null,
+    isStreaming: false,
+    rtmpUrl: null,
     chatHistory: [] // last 100 messages
   };
 
@@ -131,6 +133,8 @@ async function createRoomWithHash(roomId, { hostName = 'Host', hostSocketId = nu
     passwordHash,
     isRecording: false,
     recordingStartTime: null,
+    isStreaming: false,
+    rtmpUrl: null,
     chatHistory: []
   };
 

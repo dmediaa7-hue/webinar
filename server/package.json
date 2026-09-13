@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "node --watch src/index.js",
     "start": "node src/index.js",
-    "test": "node test/auth-runner.js && node test/integration.test.js && node --test test/meetings.test.js test/host-controls.test.js test/recording.test.js test/breakout.test.js test/waiting-room.test.js test/engagement.test.js test/whiteboard.test.js test/invite.test.js test/turn.test.js test/auth-reset.test.js"
+    "test": "node test/auth-runner.js && node test/integration.test.js && node --test test/meetings.test.js test/host-controls.test.js test/recording.test.js test/breakout.test.js test/waiting-room.test.js test/engagement.test.js test/whiteboard.test.js test/invite.test.js test/turn.test.js test/auth-reset.test.js test/rtmp.test.js"
   },
   "dependencies": {
     "@libsql/client": "^0.18.0",
@@ -16,6 +16,7 @@
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "express": "^4.18.2",
+    "ffmpeg-static": "^5.3.0",
     "jsonwebtoken": "^9.0.3",
     "socket.io": "^4.7.4",
     "uuid": "^9.0.0"

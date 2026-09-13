@@ -19,6 +19,7 @@ const { createRoom, createRoomWithHash, joinRoom, leaveRoom, getRoom, getRooms, 
 const { handleSignaling } = require('./signaling');
 const { handleChat, getChatHistory } = require('./chat');
 const recording = require('./recording');
+const { handleRtmp } = require('./rtmp');
 const breakout = require('./breakout');
 const engagement = require('./engagement');
 const whiteboard = require('./whiteboard');
@@ -1132,6 +1133,9 @@ io.on('connection', (socket) => {
 
   // --- Chat ---
   handleChat(io, socket);
+
+  // --- Live RTMP streaming (host only) ---
+  handleRtmp(io, socket);
 
   // --- Recording controls (host only) ---
   socket.on('start-recording', () => {
