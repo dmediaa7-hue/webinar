@@ -48,16 +48,25 @@ async function runTest() {
   try {
     await waitForServer(proc);
 
-    // TURN endpoint always answers 200 with the free Open Relay relay (no env
-    // vars needed): clients treat non-2xx as a console error.
+    // TURN endpoint always answers 200. The relay providers are env-configured
+    // (or the probe-gated Open Relay); with none configured the endpoint
+    // honestly reports configured:false + empty iceServers (STUN-only), so the
+    // shape — not a specific provider — is what gets asserted here.
     console.log('Testing turn-credentials endpoint...');
     const turnRes = await fetch(`${SERVER_URL}/api/turn-credentials`);
     assert(turnRes.status === 200, 'turn-credentials returns 200');
     const turnBody = await turnRes.json();
-    assert(Array.isArray(turnBody.iceServers) && turnBody.iceServers.length === 1, 'returns the Open Relay iceServers');
-    assert(turnBody.iceServers[0].username && turnBody.iceServers[0].credential, 'returns a time-limited credential');
-    assert(typeof turnBody.ttl === 'number' && turnBody.ttl > 0, 'ttl is a positive number');
-    assert(turnBody.configured === true, 'configured flag true');
+    assert(Array.isArray(turnBody.iceServers), 'iceServers is an array');
+    assert(typeof turnBody.configured === 'boolean', 'configured is a boolean flag');
+    assert(typeof turnBody.provider === 'string', 'provider is a string');
+    if (turnBody.configured) {
+      assert(turnBody.iceServers.length >= 1, 'configured relay returns iceServers');
+      assert(turnBody.iceServers.some((e) => e.username && e.credential), 'returns a time-limited credential');
+      assert(typeof turnBody.ttl === 'number' && turnBody.ttl > 0, 'ttl is a positive number');
+    } else {
+      assert(turnBody.iceServers.length === 0, 'unconfigured relay returns empty iceServers');
+      assert(turnBody.ttl === 0, 'unconfigured relay reports ttl 0');
+    }
 
     // Connect client A (host)
     console.log('Testing client connections...');
