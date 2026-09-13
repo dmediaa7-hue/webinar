@@ -103,11 +103,34 @@ CLIENT_URL=http://localhost:5173
 # Secret used to sign auth session cookies
 JWT_SECRET=change-me
 
-# WebRTC TURN relay - free by default, no env vars needed. The server serves
-# the Open Relay public relay (openrelay.metered.ca, 20 GB/month free) with
-# time-limited credentials at GET /api/turn-credentials. Required only when
-# neither peer can reach the other directly (symmetric NAT / CGNAT).
-# CLOUDFLARE_TURN_KEY_ID / _API_TOKEN are no longer supported.
+# WebRTC TURN relay - the server serves short-lived relay credentials at
+# GET /api/turn-credentials. Providers, in priority order:
+#   1. Static relay   TURN_URLS / TURN_USERNAME / TURN_CREDENTIAL
+#      (self-hosted coturn or any provider with fixed credentials)
+#   2. Cloudflare     CLOUDFLARE_TURN_KEY_ID / CLOUDFLARE_TURN_API_TOKEN
+#      Realtime       (free 1,000 GB/month tier - see below)
+#   3. Metered        METERED_APP_NAME / METERED_API_KEY
+#      Realtime       (free 20 GB/month tier - see below)
+#   4. Open Relay     legacy free default (staticauth.openrelay.metered.ca) -
+#      served ONLY when a live STUN probe confirms it actually answers; the
+#      public service has repeatedly gone dark, so a dead relay is never
+#      advertised. When no provider is available the endpoint answers
+#      configured:false and the client falls back to STUN (works on LAN and
+#      relay-reachable NATs; symmetric NAT/CGNAT peers cannot connect).
+#
+# Cloudflare Realtime setup (free tier, no credit card):
+#   1. dashboard.cloudflare.com -> Realtime -> TURN keys -> Create key
+#   2. Copy the Key ID and the API token shown once at creation
+#   3. Set CLOUDFLARE_TURN_KEY_ID and CLOUDFLARE_TURN_API_TOKEN in server/.env
+#      (Render: dashboard -> your service -> Environment)
+#
+# Metered Realtime setup (free tier, no credit card):
+#   1. Sign up at dashboard.metered.ca (free account); an app is created for
+#      you and your first app subdomain is the part before .metered.live
+#   2. Dashboard -> your app -> Credentials / API Keys -> copy the API key
+#      (a pk_live_... publishable key that allows fetching TURN credentials)
+#   3. Set METERED_APP_NAME (<subdomain>.metered.live) and METERED_API_KEY in
+#      server/.env
 
 # Turso (libSQL) remote database - REQUIRED for persistence on Render (its
 # free tier has no persistent disk, so a local SQLite file is wiped on every
