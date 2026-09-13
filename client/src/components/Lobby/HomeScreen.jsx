@@ -463,7 +463,7 @@ export default function HomeScreen() {
             <div className="space-y-3">
               {scheduledMeetings.map((meeting) => {
                 const status = computeMeetingStatus(meeting);
-                const meta = statusMeta(meeting);
+                const meta = statusMeta[status] || { label: 'Upcoming', cls: 'bg-primary/20 text-primary' };
                 return (
                   <div
                     key={meeting.id}

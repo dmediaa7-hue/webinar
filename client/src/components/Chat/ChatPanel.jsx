@@ -27,6 +27,14 @@ export default function ChatPanel({ onClose, onTyping, currentUserName }) {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
+  useEffect(() => {
+    return () => {
+      clearTimeout(typingTimeoutRef.current);
+      onTyping(false);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const handleSend = () => {
     const trimmed = input.trim();
     if (!trimmed) return;
