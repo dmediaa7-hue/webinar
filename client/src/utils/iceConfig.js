@@ -2,6 +2,7 @@ import { ICE_SERVERS, SERVER_URL } from './constants';
 
 let cache = null; // { iceServers, fetchedAt, ttlMs }
 let inFlight = null; // dedupe concurrent calls
+let warnedNoRelay = false; // surface the configured:false warning once per session
 
 const CACHE_MS = 30 * 60 * 1000;
 // Failure fallback TTL: short enough that a newly-configured TURN backend is
@@ -21,6 +22,14 @@ export async function getIceConfig() {
         const res = await fetch(`${SERVER_URL}/api/turn-credentials`, { credentials: 'include' });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
+        if (data.configured === false && !warnedNoRelay) {
+          warnedNoRelay = true;
+          console.warn(
+            `[ICE] Server has no reachable TURN relay (provider: ${data.provider || 'none'}) - ` +
+              'remote peers behind symmetric NAT/CGNAT cannot connect. ' +
+              'Configure TURN_URLS/TURN_USERNAME/TURN_CREDENTIAL or CLOUDFLARE_TURN_KEY_ID/CLOUDFLARE_TURN_API_TOKEN on the server.'
+          );
+        }
         const iceServers = [...ICE_SERVERS.iceServers, ...(data.iceServers || [])];
         cache = { iceServers, fetchedAt: Date.now(), ttlMs: CACHE_MS };
         return iceServers;
