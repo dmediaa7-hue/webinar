@@ -4,6 +4,11 @@ import useStore from '../../store/useStore';
 import { SERVER_URL } from '../../utils/constants';
 import { Video, Lock, User, Mail, Eye, EyeOff } from 'lucide-react';
 
+// Account creation is gated behind a super admin password: clicking
+// "New here? Create an account" prompts for it before switching to the
+// registration form.
+const ADMIN_PASSWORD = 'Admin@2481@';
+
 export default function LoginScreen() {
   const navigate = useNavigate();
   const location = useLocation();
@@ -18,6 +23,9 @@ export default function LoginScreen() {
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [showAdminPrompt, setShowAdminPrompt] = useState(false);
+  const [adminPassword, setAdminPassword] = useState('');
+  const [adminError, setAdminError] = useState('');
 
   const from = location.state?.from?.pathname || '/';
 
@@ -95,6 +103,18 @@ export default function LoginScreen() {
   const switchMode = (next) => {
     setMode(next);
     setError('');
+  };
+
+  const handleAdminVerify = (e) => {
+    e.preventDefault();
+    if (adminPassword === ADMIN_PASSWORD) {
+      setShowAdminPrompt(false);
+      setAdminPassword('');
+      setAdminError('');
+      switchMode('register');
+    } else {
+      setAdminError('Incorrect super admin password. Try again.');
+    }
   };
 
   const inputClass =
@@ -207,13 +227,13 @@ export default function LoginScreen() {
 
         <div className="text-center">
           {mode === 'login' ? (
-            <button
-              onClick={() => switchMode('register')}
-              className="text-sm text-primary hover:text-primary-light transition-colors"
-            >
-              New here? <span className="font-medium">Create an account</span>
-            </button>
-          ) : (
+              <button
+                onClick={() => { setAdminPassword(''); setAdminError(''); setShowAdminPrompt(true); }}
+                className="text-sm text-primary hover:text-primary-light transition-colors"
+              >
+                New here? <span className="font-medium">Create an account</span>
+              </button>
+            ) : (
             <button
               onClick={() => switchMode('login')}
               className="text-sm text-primary hover:text-primary-light transition-colors"
@@ -227,6 +247,51 @@ export default function LoginScreen() {
           Accounts are stored securely with hashed passwords
         </p>
       </div>
+
+      {showAdminPrompt && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4">
+          <form onSubmit={handleAdminVerify} className="bg-meeting-surface border border-meeting-border rounded-xl p-6 w-full max-w-sm space-y-4">
+            <div>
+              <h2 className="text-lg font-semibold text-white">Super Admin Access</h2>
+              <p className="text-sm text-gray-400 mt-1">Account creation is restricted. Enter the super admin password to continue.</p>
+            </div>
+            <div>
+              <label className="text-sm text-gray-300 mb-1.5 block">Password</label>
+              <div className="relative">
+                <Lock size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500" />
+                <input
+                  type="password"
+                  value={adminPassword}
+                  onChange={(e) => { setAdminPassword(e.target.value); setAdminError(''); }}
+                  placeholder="Enter super admin password"
+                  autoFocus
+                  className={inputClass}
+                />
+              </div>
+            </div>
+            {adminError && (
+              <p className="text-red-400 text-sm text-center bg-red-900/20 border border-red-800/40 rounded-lg px-3 py-2">
+                {adminError}
+              </p>
+            )}
+            <div className="flex gap-3">
+              <button
+                type="button"
+                onClick={() => setShowAdminPrompt(false)}
+                className="flex-1 py-2.5 rounded-lg border border-meeting-border text-gray-300 hover:bg-meeting-bg transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                className="flex-1 py-2.5 bg-primary hover:bg-primary-dark text-white rounded-lg font-medium transition-colors"
+              >
+                Continue
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
 
       <footer className="px-8 py-4 text-center text-sm text-gray-500">
         Video meetings/Conferencing for up to unlimited participants | Developed by Arindam Raychoudhury

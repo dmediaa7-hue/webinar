@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { RefreshCw, Play, Square, Download, Clock, FileVideo } from 'lucide-react';
+import { RefreshCw, Play, Square, Download, Clock, FileVideo, Trash2 } from 'lucide-react';
 import apiFetch from '../../utils/api';
 
 const RECORDING_STATUS_META = {
@@ -59,6 +59,8 @@ export default function RecordingsSection() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [playingId, setPlayingId] = useState(null);
+  const [deletingId, setDeletingId] = useState(null);
+  const [deletingProcessing, setDeletingProcessing] = useState(false);
 
   const fetchRecordings = useCallback(async () => {
     setLoading(true);
@@ -84,9 +86,52 @@ export default function RecordingsSection() {
     fetchRecordings();
   };
 
+  const handleDeleteRecording = async (recording) => {
+    if (!window.confirm(`Delete "${recording.roomName || 'Untitled meeting'}"?`)) return;
+    setDeletingId(recording.id);
+    try {
+      const res = await apiFetch(`/api/recordings/${recording.id}`, { method: 'DELETE' });
+      if (!res.ok) throw new Error('Delete failed');
+      setRecordings((prev) => prev.filter((r) => r.id !== recording.id));
+      if (playingId === recording.id) setPlayingId(null);
+    } catch {
+      setError('Could not delete recording.');
+    } finally {
+      setDeletingId(null);
+    }
+  };
+
+  const handleDeleteProcessing = async () => {
+    if (!window.confirm('Delete all recordings currently processing?')) return;
+    setDeletingProcessing(true);
+    try {
+      const res = await apiFetch('/api/recordings/processing', { method: 'DELETE' });
+      if (!res.ok) throw new Error('Delete failed');
+      setRecordings((prev) => prev.filter((r) => r.status !== 'processing'));
+      if (playingId) setPlayingId(null);
+    } catch {
+      setError('Could not delete processing recordings.');
+    } finally {
+      setDeletingProcessing(false);
+    }
+  };
+
+  const processingCount = recordings.filter((r) => r.status === 'processing').length;
+
   return (
     <div className="mt-4 space-y-3">
-      <div className="flex justify-end">
+      <div className="flex justify-end gap-2">
+        {processingCount > 0 && (
+          <button
+            onClick={handleDeleteProcessing}
+            disabled={deletingProcessing}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm bg-red-600/20 hover:bg-red-600/30 text-red-400 border border-red-800/40 transition-colors disabled:opacity-50"
+            title="Delete all recordings with Processing status"
+          >
+            <Trash2 size={15} />
+            {deletingProcessing ? 'Deleting...' : `Delete Processing (${processingCount})`}
+          </button>
+        )}
         <button
           onClick={handleRefresh}
           disabled={loading}
@@ -146,26 +191,37 @@ export default function RecordingsSection() {
                     </p>
                   </div>
 
-                  {hasFile && (
-                    <div className="flex flex-wrap items-center gap-2">
-                      <button
-                        onClick={() => setPlayingId(isPlaying ? null : recording.id)}
-                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm bg-meeting-surface hover:bg-white/10 text-gray-200 border border-meeting-border transition-colors"
-                        title={isPlaying ? 'Hide player' : 'Play recording'}
-                      >
-                        {isPlaying ? <Square size={13} /> : <Play size={13} />}
-                        {isPlaying ? 'Hide' : 'Play'}
-                      </button>
-                      <a
-                        href={recording.url}
-                        download
-                        className="flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-lg bg-meeting-surface hover:bg-white/10 text-gray-200 border border-meeting-border transition-colors"
-                        title="Download recording"
-                      >
-                        <Download size={13} /> Download
-                      </a>
-                    </div>
-                  )}
+                  <div className="flex flex-wrap items-center gap-2">
+                    {hasFile && (
+                      <>
+                        <button
+                          onClick={() => setPlayingId(isPlaying ? null : recording.id)}
+                          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm bg-meeting-surface hover:bg-white/10 text-gray-200 border border-meeting-border transition-colors"
+                          title={isPlaying ? 'Hide player' : 'Play recording'}
+                        >
+                          {isPlaying ? <Square size={13} /> : <Play size={13} />}
+                          {isPlaying ? 'Hide' : 'Play'}
+                        </button>
+                        <a
+                          href={recording.url}
+                          download
+                          className="flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-lg bg-meeting-surface hover:bg-white/10 text-gray-200 border border-meeting-border transition-colors"
+                          title="Download recording"
+                        >
+                          <Download size={13} /> Download
+                        </a>
+                      </>
+                    )}
+                    <button
+                      onClick={() => handleDeleteRecording(recording)}
+                      disabled={deletingId === recording.id}
+                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm bg-red-600/20 hover:bg-red-600/30 text-red-400 border border-red-800/40 transition-colors disabled:opacity-50"
+                      title="Delete recording"
+                    >
+                      <Trash2 size={13} />
+                      {deletingId === recording.id ? 'Deleting...' : 'Delete'}
+                    </button>
+                  </div>
                 </div>
 
                 {isPlaying && hasFile && (

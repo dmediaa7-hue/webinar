@@ -5,6 +5,7 @@ import { Mic, MicOff, Video, VideoOff, ArrowLeft } from 'lucide-react';
 import useStore from '../../store/useStore';
 import { useMedia } from '../../hooks/useMedia';
 import { MEDIA_CONSTRAINTS } from '../../utils/constants';
+import { shouldMirrorLocalVideo } from '../../utils/mirror';
 
 export default function LobbyScreen() {
   const navigate = useNavigate();
@@ -51,6 +52,12 @@ export default function LobbyScreen() {
   };
 
   const handleJoin = () => {
+    useStore.getState().setLobbySettings({
+      micEnabled,
+      cameraEnabled,
+      micDeviceId,
+      cameraDeviceId
+    });
     if (hintedRoom) navigate(`/meeting/${hintedRoom}`);
     else navigate('/');
   };
@@ -82,7 +89,7 @@ export default function LobbyScreen() {
 
   return (
     <div className="app-screen-min bg-meeting-bg flex flex-col">
-      <header className="px-8 py-4 flex items-center gap-3">
+      <header className="px-4 sm:px-8 py-4 flex items-center gap-3">
         <button
           onClick={handleBack}
           className="icon-btn text-gray-400 hover:text-white"
@@ -97,7 +104,13 @@ export default function LobbyScreen() {
         <div className="w-full max-w-2xl">
           <div className="relative rounded-xl overflow-hidden bg-meeting-card aspect-video mb-6">
             {cameraEnabled && media.stream ? (
-              <video ref={videoRef} autoPlay playsInline muted className="w-full h-full object-cover" />
+              <video
+                ref={videoRef}
+                autoPlay
+                playsInline
+                muted
+                className={`w-full h-full object-cover${shouldMirrorLocalVideo(media.facingMode) ? ' mirrored-video' : ''}`}
+              />
             ) : (
               <div className="flex items-center justify-center h-full">
                 <div className="text-center">
