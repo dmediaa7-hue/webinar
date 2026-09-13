@@ -96,13 +96,16 @@ export function useMedia() {
    */
   const toggleMute = useCallback(() => {
     if (!streamRef.current) return;
-    setIsMuted(prev => {
-      const newState = !prev;
-      streamRef.current.getAudioTracks().forEach(track => {
-        track.enabled = !newState;
-      });
-      return newState;
+    // Derive the next state from the ACTUAL track state, not the hook's own
+    // isMuted copy - a host force-mute disables track.enabled directly, so
+    // toggling from stale state would keep the mic muted on the first click.
+    const audioTracks = streamRef.current.getAudioTracks();
+    const currentlyMuted = audioTracks.length === 0 || audioTracks.every((track) => !track.enabled);
+    const nextMuted = !currentlyMuted;
+    audioTracks.forEach((track) => {
+      track.enabled = !nextMuted;
     });
+    setIsMuted(nextMuted);
   }, []);
 
   /**
@@ -110,13 +113,16 @@ export function useMedia() {
    */
   const toggleVideo = useCallback(() => {
     if (!streamRef.current) return;
-    setIsVideoOff(prev => {
-      const newState = !prev;
-      streamRef.current.getVideoTracks().forEach(track => {
-        track.enabled = !newState;
-      });
-      return newState;
+    // Same track-state-derived logic as toggleMute: never trust a stale
+    // internal isVideoOff copy when the track's enabled flag may have been
+    // flipped by an external path (force actions, lobby mid-join).
+    const videoTracks = streamRef.current.getVideoTracks();
+    const currentlyOff = videoTracks.length === 0 || videoTracks.every((track) => !track.enabled);
+    const nextOff = !currentlyOff;
+    videoTracks.forEach((track) => {
+      track.enabled = !nextOff;
     });
+    setIsVideoOff(nextOff);
   }, []);
 
   /**

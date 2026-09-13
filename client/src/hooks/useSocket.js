@@ -19,7 +19,7 @@ export function useSocket() {
 
     // Set up all event listeners
     const setupListeners = () => {
-      socket.on('connect', () => {
+      const onConnect = () => {
         store.getState().setMySocketId(socket.id);
         // On an unexpected drop the server already broadcast participant-left for our old socket,
         // so rejoin to un-freeze the meeting for everyone else (skipped when left intentionally).
@@ -36,13 +36,14 @@ export function useSocket() {
             }
           });
         }
-      });
+      };
+      socket.on('connect', onConnect);
       if (socket.connected) {
         store.getState().setMySocketId(socket.id);
       }
 
       // Room events
-      socket.on(EVENTS.ROOM_JOINED, ({ roomId, roomName, participants, isHost, settings }) => {
+      const onRoomJoined = ({ roomId, roomName, participants, isHost, settings }) => {
         store.getState().setRoom(roomId);
         if (roomName) store.getState().setRoomName(roomName);
         store.getState().setIsHost(isHost);
@@ -59,14 +60,16 @@ export function useSocket() {
 
         store.getState().setIsConnecting(false);
         console.log('[Socket] Joined room:', roomId);
-      });
+      };
+      socket.on(EVENTS.ROOM_JOINED, onRoomJoined);
 
-      socket.on(EVENTS.PARTICIPANT_JOINED, ({ participant }) => {
+      const onParticipantJoined = ({ participant }) => {
         console.log('[Socket] Participant joined:', participant.displayName);
         store.getState().addParticipant({ ...participant, stream: null });
-      });
+      };
+      socket.on(EVENTS.PARTICIPANT_JOINED, onParticipantJoined);
 
-      socket.on(EVENTS.PARTICIPANT_LEFT, ({ socketId, newHost }) => {
+      const onParticipantLeft = ({ socketId, newHost }) => {
         console.log('[Socket] Participant left:', socketId);
         store.getState().removeParticipant(socketId);
         store.getState().removeTypingUser(socketId);
@@ -76,103 +79,130 @@ export function useSocket() {
           store.getState().updateParticipant(newHost, { isHost: true });
           store.getState().setIsHost(newHost === socket.id);
         }
-      });
+      };
+      socket.on(EVENTS.PARTICIPANT_LEFT, onParticipantLeft);
 
       // Chat events
-      socket.on(EVENTS.USER_TYPING, ({ senderId, isTyping }) => {
+      const onUserTyping = ({ senderId, isTyping }) => {
         if (isTyping) {
           store.getState().addTypingUser(senderId);
         } else {
           store.getState().removeTypingUser(senderId);
         }
-      });
+      };
+      socket.on(EVENTS.USER_TYPING, onUserTyping);
 
       // Host control events
-      socket.on(EVENTS.KICKED, ({ byHost }) => {
+      const onKicked = ({ byHost }) => {
         console.log('[Socket] Kicked by', byHost);
         handleKicked();
-      });
+      };
+      socket.on(EVENTS.KICKED, onKicked);
 
-      socket.on(EVENTS.FORCE_MUTE, () => {
+      const onForceMute = () => {
         store.getState().setIsMuted(true);
-        // Actually mute local stream
-        const localStream = store.getState().localStream;
-        if (localStream) {
-          localStream.getAudioTracks().forEach(track => {
+        // During a screen share localStream is swapped to the display stream
+        // (audio:false), so the mic track lives on localCameraStream. Disable
+        // whichever stream actually carries the audio track.
+        const state = store.getState();
+        const audioSource = (state.localStream && state.localStream.getAudioTracks().length)
+          ? state.localStream
+          : state.localCameraStream;
+        if (audioSource) {
+          audioSource.getAudioTracks().forEach(track => {
             track.enabled = false;
           });
         }
-      });
+      };
+      socket.on(EVENTS.FORCE_MUTE, onForceMute);
 
-      socket.on(EVENTS.ROOM_LOCKED, ({ isLocked }) => {
+      const onRoomLocked = ({ isLocked }) => {
         store.getState().setRoomSettings({ ...store.getState().roomSettings, isLocked });
-      });
+      };
+      socket.on(EVENTS.ROOM_LOCKED, onRoomLocked);
 
-      socket.on(EVENTS.ROOM_SETTINGS_UPDATED, (settings) => {
+      const onRoomSettingsUpdated = (settings) => {
         store.getState().setRoomSettings(settings);
-      });
+      };
+      socket.on(EVENTS.ROOM_SETTINGS_UPDATED, onRoomSettingsUpdated);
 
-      socket.on(EVENTS.ERROR, ({ message }) => {
+      const onError = ({ message }) => {
         console.error('[Socket] Error:', message);
         useStore.getState().showToast(message || 'An error occurred');
-      });
+      };
+      socket.on(EVENTS.ERROR, onError);
 
-      socket.on(EVENTS.RECORDING_STARTED, () => {
+      const onRecordingStarted = () => {
         store.getState().setIsRecording(true);
-      });
+      };
+      socket.on(EVENTS.RECORDING_STARTED, onRecordingStarted);
 
-      socket.on(EVENTS.RECORDING_STOPPED, () => {
+      const onRecordingStopped = () => {
         store.getState().setIsRecording(false);
-      });
+      };
+      socket.on(EVENTS.RECORDING_STOPPED, onRecordingStopped);
 
-      socket.on('attendance-updated', ({ attendance }) => {
+      const onAttendanceUpdated = ({ attendance }) => {
         store.getState().setAttendance(attendance);
-      });
+      };
+      socket.on('attendance-updated', onAttendanceUpdated);
 
-      socket.on(EVENTS.BREAKOUT_UPDATED, (breakoutState) => {
+      const onBreakoutUpdated = (breakoutState) => {
         store.getState().setBreakoutState(breakoutState);
-      });
+      };
+      socket.on(EVENTS.BREAKOUT_UPDATED, onBreakoutUpdated);
 
       // Waiting room (task 14)
-      socket.on(EVENTS.WAITING_ROOM, ({ roomId: waitingRoomId }) => {
+      const onWaitingRoom = ({ roomId: waitingRoomId }) => {
         store.getState().setWaitingForRoom(true);
         store.getState().setWaitingRoomId(waitingRoomId);
-      });
+      };
+      socket.on(EVENTS.WAITING_ROOM, onWaitingRoom);
 
-      socket.on(EVENTS.WAITING_DENIED, () => {
+      const onWaitingDenied = () => {
         handleDenied();
-      });
+      };
+      socket.on(EVENTS.WAITING_DENIED, onWaitingDenied);
 
-      socket.on(EVENTS.WAITING_LIST_UPDATED, ({ waitingList }) => {
+      const onWaitingListUpdated = ({ waitingList }) => {
         store.getState().setWaitingList(waitingList || []);
-      });
+      };
+      socket.on(EVENTS.WAITING_LIST_UPDATED, onWaitingListUpdated);
 
-      socket.on('disconnect', () => {
+      const onDisconnect = () => {
         console.log('[Socket] Disconnected from server');
-      });
+      };
+      socket.on('disconnect', onDisconnect);
+
+      // Return the registered [event, handler] pairs so cleanup can remove
+      // exactly these - never bare-`off` (that would scrap other components'
+      // listeners on this shared module-level socket).
+      return [
+        ['connect', onConnect],
+        [EVENTS.ROOM_JOINED, onRoomJoined],
+        [EVENTS.PARTICIPANT_JOINED, onParticipantJoined],
+        [EVENTS.PARTICIPANT_LEFT, onParticipantLeft],
+        [EVENTS.USER_TYPING, onUserTyping],
+        [EVENTS.KICKED, onKicked],
+        [EVENTS.FORCE_MUTE, onForceMute],
+        [EVENTS.ROOM_LOCKED, onRoomLocked],
+        [EVENTS.ROOM_SETTINGS_UPDATED, onRoomSettingsUpdated],
+        [EVENTS.ERROR, onError],
+        [EVENTS.RECORDING_STARTED, onRecordingStarted],
+        [EVENTS.RECORDING_STOPPED, onRecordingStopped],
+        ['attendance-updated', onAttendanceUpdated],
+        [EVENTS.BREAKOUT_UPDATED, onBreakoutUpdated],
+        [EVENTS.WAITING_ROOM, onWaitingRoom],
+        [EVENTS.WAITING_DENIED, onWaitingDenied],
+        [EVENTS.WAITING_LIST_UPDATED, onWaitingListUpdated],
+        ['disconnect', onDisconnect]
+      ];
     };
 
-    setupListeners();
+    const registeredHandlerPairs = setupListeners();
 
     return () => {
-      // Cleanup listeners
-      socket.off('connect');
-      socket.off(EVENTS.ROOM_JOINED);
-      socket.off(EVENTS.PARTICIPANT_JOINED);
-      socket.off(EVENTS.PARTICIPANT_LEFT);
-      socket.off(EVENTS.USER_TYPING);
-      socket.off(EVENTS.KICKED);
-      socket.off(EVENTS.FORCE_MUTE);
-      socket.off(EVENTS.ROOM_LOCKED);
-      socket.off(EVENTS.ROOM_SETTINGS_UPDATED);
-      socket.off(EVENTS.ERROR);
-      socket.off(EVENTS.RECORDING_STARTED);
-      socket.off(EVENTS.RECORDING_STOPPED);
-      socket.off('attendance-updated');
-      socket.off(EVENTS.BREAKOUT_UPDATED);
-      socket.off(EVENTS.WAITING_ROOM);
-      socket.off(EVENTS.WAITING_DENIED);
-      socket.off(EVENTS.WAITING_LIST_UPDATED);
+      registeredHandlerPairs.forEach(([event, handler]) => socket.off(event, handler));
     };
   }, []);
 

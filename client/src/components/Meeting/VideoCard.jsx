@@ -10,14 +10,22 @@ export default function VideoCard({ participant, stream, isLocal, facingMode = '
   const displayName = participant?.displayName || 'Guest';
   const isParticipantHost = participant?.isHost;
 
+  // A stream can carry audio only (camera denied/off at publish time): the
+  // 'stream' event still fires and isVideoOff may still be false on the remote
+  // roster, so derive "has video" from the actual tracks, not the flag alone -
+  // otherwise the tile renders a permanently black <video> instead of the avatar.
+  const streamHasVideo = Boolean(stream && stream.getVideoTracks().length > 0);
+  const streamHasAudio = Boolean(stream && stream.getAudioTracks().length > 0);
+  const hasVideo = Boolean(streamHasVideo && !isVideoOff);
+
   useEffect(() => {
     const el = videoRef.current;
-    if (el && stream && !isVideoOff) {
-      el.srcObject = stream;
+    if (el && stream && !isVideoOff && streamHasVideo) {
+      if (el.srcObject !== stream) el.srcObject = stream;
     } else if (el && el.srcObject) {
       el.srcObject = null;
     }
-  }, [stream, isVideoOff]);
+  }, [stream, isVideoOff, streamHasVideo]);
 
   useEffect(() => {
     return () => {
@@ -26,14 +34,17 @@ export default function VideoCard({ participant, stream, isLocal, facingMode = '
     };
   }, []);
 
-  const hasVideo = Boolean(stream && !isVideoOff);
   const mirrorClass = !isScreenSharing && isLocal && shouldMirrorLocalVideo(facingMode) ? ' mirrored-video' : '';
 
   const activeReactions = filterActiveReactions(reactions, Date.now());
 
   return (
     <div className={`video-container h-full w-full relative min-h-0 min-w-0`}>
-      {hasVideo && (
+      {/* Always mount the <video> for any stream carrying video OR audio so
+          remote audio keeps playing through this element even when the peer
+          has no video track (camera off at publish). The avatar overlay below
+          covers the black frame in that case. */}
+      {stream && !isVideoOff && (streamHasVideo || streamHasAudio) && (
         <video
           ref={videoRef}
           autoPlay
@@ -56,7 +67,7 @@ export default function VideoCard({ participant, stream, isLocal, facingMode = '
 
       {/* Avatar fallback when no video */}
       {!hasVideo && (
-        <div className="avatar-fallback">
+        <div className="avatar-fallback absolute inset-0 z-[5]">
           <div className="text-center">
             <div className="w-16 h-16 rounded-full bg-meeting-surface border border-meeting-border flex items-center justify-center mx-auto mb-2">
               <span className="text-xl font-bold text-gray-300">
@@ -73,20 +84,20 @@ export default function VideoCard({ participant, stream, isLocal, facingMode = '
 
       {/* Screen sharing indicator */}
       {isScreenSharing && (
-        <div className="absolute top-2 left-2 px-2 py-1 bg-primary/90 rounded-full text-xs text-white flex items-center gap-1">
+        <div className="absolute top-2 left-2 z-10 px-2 py-1 bg-primary/90 rounded-full text-xs text-white flex items-center gap-1">
           <MonitorUp size={12} />
           Sharing
         </div>
       )}
 
       {/* Status badges */}
-      <div className="absolute bottom-2 left-2 flex gap-2">
+      <div className="absolute bottom-2 left-2 z-10 flex gap-2">
         {isMuted && (
           <div className="w-6 h-6 rounded-full bg-red-600/90 flex items-center justify-center" title="Microphone muted">
             <MicOff size={12} />
           </div>
         )}
-        {!isMuted && hasVideo && (
+        {!isMuted && streamHasAudio && (
           <div className="w-6 h-6 rounded-full bg-black/50 flex items-center justify-center" title="Microphone on">
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
@@ -104,7 +115,7 @@ export default function VideoCard({ participant, stream, isLocal, facingMode = '
       </div>
 
       {/* Name label */}
-      <div className="absolute bottom-2 right-2 px-2 py-0.5 bg-black/50 rounded text-xs text-gray-200">
+      <div className="absolute bottom-2 right-2 z-10 px-2 py-0.5 bg-black/50 rounded text-xs text-gray-200">
         {displayName} {isLocal && '(You)'}
         {isParticipantHost && <span className="text-yellow-400 ml-1">&#x1F451;</span>}
       </div>

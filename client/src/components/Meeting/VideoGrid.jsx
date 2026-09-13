@@ -9,6 +9,9 @@ export default function VideoGrid() {
 
   const participants = useStore((s) => s.participants);
   const localStream = useStore((s) => s.localStream);
+  // The camera stream, kept separate from localStream (which is swapped to the
+  // display stream during screen share so peers receive the screen).
+  const localCameraStream = useStore((s) => s.localCameraStream);
   const localFacingMode = useStore((s) => s.localFacingMode);
   const isMuted = useStore((s) => s.isMuted);
   const isVideoOff = useStore((s) => s.isVideoOff);
@@ -72,7 +75,7 @@ export default function VideoGrid() {
     <VideoCard
       key="local"
       participant={{ socketId: mySocketId, displayName, isHost }}
-      stream={localStream}
+      stream={localCameraStream || localStream}
       isLocal={true}
       facingMode={localFacingMode}
       isMuted={isMuted}
