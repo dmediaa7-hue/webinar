@@ -92,14 +92,35 @@ test('host controls are enforced server-side', async (t) => {
     });
     assert.equal(guestGotForceMute, false, 'guest mute attempt did not mute anyone');
 
-    // 1b. Host mute succeeds: guest receives force-mute.
-    const hostMutedGuest = await new Promise((resolve) => {
-      const onForceMute = () => resolve(true);
+    // 1b. Host mute succeeds: guest receives force-mute, and the room broadcast
+    // carries the muted state so every participant's tile shows the badge.
+    const { muted, broadcastSeen } = await new Promise((resolve) => {
+      let muted = false;
+      let broadcastSeen = false;
+      const check = () => {
+        if (muted && broadcastSeen) resolve({ muted, broadcastSeen });
+      };
+      const onForceMute = () => {
+        muted = true;
+        check();
+      };
+      const onToggle = (data) => {
+        if (data.socketId === guest.id && data.isMuted === true) {
+          broadcastSeen = true;
+          check();
+        }
+      };
       guest.once('force-mute', onForceMute);
+      host.on('participant-audio-toggled', onToggle);
       host.emit('mute-participant', { targetId: guest.id });
-      setTimeout(() => resolve(false), 800);
+      setTimeout(() => {
+        guest.off('force-mute', onForceMute);
+        host.off('participant-audio-toggled', onToggle);
+        resolve({ muted, broadcastSeen });
+      }, 800);
     });
-    assert.equal(hostMutedGuest, true, 'host mute reaches the guest');
+    assert.equal(muted, true, 'host mute reaches the guest');
+    assert.equal(broadcastSeen, true, 'mute broadcast reaches the host with isMuted=true');
 
     // 1c. Non-host kick is a no-op: guest stays connected.
     guest.emit('kick-participant', { targetId: host.id });

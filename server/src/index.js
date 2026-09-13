@@ -976,6 +976,14 @@ io.on('connection', (socket) => {
       updateParticipant(room.id, targetId, { isMuted: true });
       io.to(targetId).emit('force-mute');
       socket.emit('participant-muted', { socketId: targetId, displayName: target.displayName });
+      // Keep every participant's roster in sync with the host's force-mute so
+      // the muted badge appears on the target's tile for everyone, not just
+      // the host and the muted participant.
+      io.to(room.id).emit('participant-audio-toggled', {
+        socketId: targetId,
+        displayName: target.displayName,
+        isMuted: true
+      });
     }
   });
 
