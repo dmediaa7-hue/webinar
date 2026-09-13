@@ -2,6 +2,8 @@
 import SimplePeer from 'simple-peer';
 import { EVENTS } from '../utils/constants';
 import { getIceConfig } from '../utils/iceConfig';
+import { bufferCandidate, drainCandidates, clearCandidates, clearAllCandidates } from '../utils/iceCandidateBuffer';
+import { shouldInitiate } from '../utils/initiator';
 import useStore from '../store/useStore';
 
 const RETRY_BASE_MS = 1000;
@@ -16,6 +18,19 @@ export function useWebRTC(socket) {
   const remoteStreamsRef = useRef(new Map());
   const retryTimersRef = useRef(new Map());
   const retryAttemptsRef = useRef(new Map());
+  // ICE candidates received before the matching peer exists are queued here,
+  // then drained into the peer once created (simple-peer itself buffers
+  // candidates only in order, after the peer object is constructed).
+  const pendingCandidatesRef = useRef(new Map());
+  // Offers that arrived before local media was ready: createPeer bails without
+  // a stream, so without this the SDP would be dropped and the pair would
+  // deadlock (answerer waits for an offer it already received). Applied once
+  // the media-landed re-init effect creates the peer.
+  const pendingOffersRef = useRef(new Map());
+  // Role each peer was created with: 'initiator' | 'answerer'. Used to resolve
+  // glare: if a peer we created as initiator receives an offer, the remote also
+  // (wrongly) initiated, so tear ours down and answer instead.
+  const peerRolesRef = useRef(new Map());
 
   /**
    * Create a new peer connection
@@ -54,7 +69,24 @@ export function useWebRTC(socket) {
     });
 
     peersRef.current.set(socketId, peer);
+    peerRolesRef.current.set(socketId, initiator ? 'initiator' : 'answerer');
     useStore.getState().addPeer(socketId, peer);
+
+    // Flush ICE candidates that arrived while this peer was being created
+    // (e.g. during the getIceConfig await above). simple-peer handles
+    // candidate signals before the offer/answer negotiation fine.
+    drainCandidates(pendingCandidatesRef.current, socketId).forEach((cand) => {
+      peer.signal({ candidate: cand });
+    });
+
+    // Apply an offer that arrived before local media was ready (handleOffer
+    // buffered it because createPeer had to bail). The media-landed re-init
+    // effect creates this peer as answerer, and signaling the buffered offer
+    // completes the negotiation that would otherwise deadlock.
+    const pendingOffer = drainCandidates(pendingOffersRef.current, socketId)[0];
+    if (pendingOffer) {
+      peer.signal(pendingOffer);
+    }
 
     // Handle signaling data
     peer.on('signal', (data) => {
@@ -126,43 +158,6 @@ export function useWebRTC(socket) {
   }, [socket]);
 
   /**
-   * Handle incoming offer
-   */
-  const handleOffer = useCallback(async (fromSocketId, fromName, sdp) => {
-    console.log('[WebRTC] Received offer from', fromName || fromSocketId);
-
-    let peer = peersRef.current.get(fromSocketId);
-    if (!peer || peer.destroyed) {
-      peer = await createPeer(fromSocketId, false);
-    }
-
-    if (peer && !peer.destroyed) {
-      peer.signal(sdp);
-    }
-  }, [createPeer]);
-
-  /**
-   * Handle incoming answer
-   */
-  const handleAnswer = useCallback((fromSocketId, sdp) => {
-    console.log('[WebRTC] Received answer from', fromSocketId);
-    const peer = peersRef.current.get(fromSocketId);
-    if (peer && !peer.destroyed) {
-      peer.signal(sdp);
-    }
-  }, []);
-
-  /**
-   * Handle incoming ICE candidate
-   */
-  const handleIceCandidate = useCallback((fromSocketId, candidate) => {
-    const peer = peersRef.current.get(fromSocketId);
-    if (peer && !peer.destroyed) {
-      peer.signal({ candidate });
-    }
-  }, []);
-
-  /**
    * Remove a peer connection
    */
   const cleanupPeer = useCallback((socketId) => {
@@ -185,6 +180,9 @@ export function useWebRTC(socket) {
       remoteStreamsRef.current.delete(socketId);
     }
     peersRef.current.delete(socketId);
+    peerRolesRef.current.delete(socketId);
+    clearCandidates(pendingCandidatesRef.current, socketId);
+    clearCandidates(pendingOffersRef.current, socketId);
     useStore.getState().removePeer(socketId);
     // Clear their stream from participants
     const participants = useStore.getState().participants;
@@ -195,12 +193,75 @@ export function useWebRTC(socket) {
   }, []);
 
   /**
+   * Handle incoming offer
+   */
+  const handleOffer = useCallback(async (fromSocketId, fromName, sdp) => {
+    console.log('[WebRTC] Received offer from', fromName || fromSocketId);
+
+    let peer = peersRef.current.get(fromSocketId);
+
+    // Glare: a peer we created as initiator receiving an offer means BOTH sides
+    // decided to initiate (e.g. simultaneous join). Only one offer can win -
+    // answerer does - so tear our initiator peer down and answer instead.
+    if (peer && !peer.destroyed && peerRolesRef.current.get(fromSocketId) === 'initiator') {
+      console.warn('[WebRTC] Glare with', fromSocketId, '- switching to answerer');
+      cleanupPeer(fromSocketId);
+      peer = undefined;
+    }
+
+    if (!peer || peer.destroyed) {
+      peer = await createPeer(fromSocketId, false);
+      if (!peer) {
+        // Local media not ready, so createPeer bailed. Buffer the offer so it
+        // is applied when the media-landed re-init effect creates this peer
+        // (see createPeer's pending-offer drain) - otherwise the initiator
+        // waits forever for an answer to an offer we already received.
+        bufferCandidate(pendingOffersRef.current, fromSocketId, sdp);
+        return;
+      }
+    }
+
+    if (peer && !peer.destroyed) {
+      peer.signal(sdp);
+    }
+  }, [createPeer, cleanupPeer]);
+
+  /**
+   * Handle incoming answer
+   */
+  const handleAnswer = useCallback((fromSocketId, sdp) => {
+    console.log('[WebRTC] Received answer from', fromSocketId);
+    const peer = peersRef.current.get(fromSocketId);
+    if (peer && !peer.destroyed) {
+      peer.signal(sdp);
+    }
+  }, []);
+
+  /**
+   * Handle incoming ICE candidate
+   */
+  const handleIceCandidate = useCallback((fromSocketId, candidate) => {
+    const peer = peersRef.current.get(fromSocketId);
+    if (peer && !peer.destroyed) {
+      peer.signal({ candidate });
+    } else {
+      // Peer not created yet (offer/answer still in flight, createPeer awaiting
+      // ice config). Queue instead of dropping - simple-peer can only accept
+      // candidates once its peer object exists.
+      bufferCandidate(pendingCandidatesRef.current, fromSocketId, candidate);
+    }
+  }, []);
+
+  /**
    * Clean up all peers
    */
   const cleanupAllPeers = useCallback(() => {
     retryTimersRef.current.forEach((timer) => clearTimeout(timer));
     retryTimersRef.current.clear();
     retryAttemptsRef.current.clear();
+    peerRolesRef.current.clear();
+    clearAllCandidates(pendingCandidatesRef.current);
+    clearAllCandidates(pendingOffersRef.current);
     peersRef.current.forEach((peer, socketId) => {
       try { peer.destroy(); } catch (e) { console.warn('[webrtc] peer destroy failed', e); }
       peersRef.current.delete(socketId);
@@ -231,7 +292,19 @@ export function useWebRTC(socket) {
       try {
         nextTracks.forEach((nextTrack) => {
           const oldTrack = prevTracks.find((t) => t.kind === nextTrack.kind);
-          if (!oldTrack || oldTrack === nextTrack) return;
+          if (oldTrack === nextTrack) return;
+
+          if (!oldTrack) {
+            // Kind absent from the previous stream (e.g. host mic publishing
+            // mid screen-share): there is no RTCRtpSender to replace, so add
+            // the track fresh. simple-peer's addTrack triggers renegotiation.
+            try {
+              peer.addTrack(nextTrack, stream);
+            } catch (addErr) {
+              console.error('[WebRTC] Failed to add track for peer', socketId, addErr);
+            }
+            return;
+          }
 
           // replaceTrack's sender lookup is keyed by the stream the old track
           // was originally attached to (or the submap it inherited via an
