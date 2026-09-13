@@ -79,8 +79,9 @@
   }
 }
 
-/* Mirror every participant's camera tile (self + remote). Screen share
-   videos are rendered separately and intentionally stay unmirrored. */
+/* Local camera tiles mirror only for front(-facing) cameras (or desktop
+   webcams, which expose no facingMode). Rear/external cameras render the raw
+   viewfinder image. Screen share videos stay unmirrored. */
 .mirrored-video {
   transform: scaleX(-1);
 }
@@ -135,6 +136,32 @@
 @keyframes pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.4; }
+}
+
+/* Broadcast ticker marquee (BroadcastOverlay): the track holds a doubled
+   content row and slides it exactly -50% so the loop is seamless. */
+.broadcast-ticker-track {
+  display: inline-flex;
+  white-space: nowrap;
+  will-change: transform;
+  animation-name: broadcastTicker;
+  animation-timing-function: linear;
+  animation-iteration-count: infinite;
+}
+
+@keyframes broadcastTicker {
+  from { transform: translateX(0); }
+  to { transform: translateX(-50%); }
+}
+
+/* Lower-third (super) entrance: slides up + fades, news-graphic style. */
+.broadcast-super-enter {
+  animation: broadcastSuperIn 0.35s ease-out forwards;
+}
+
+@keyframes broadcastSuperIn {
+  from { transform: translateY(14px); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
 }
 
 /* Reaction emoji burst on a participant tile (duration matches REACTION_TTL_MS) */

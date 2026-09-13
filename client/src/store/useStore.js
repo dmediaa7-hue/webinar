@@ -5,6 +5,7 @@ import {
   pushRecentReaction,
   REACTION_TTL_MS
 } from '../utils/reactionCodec';
+import { DEFAULT_BROADCAST_OVERLAY } from '../utils/broadcastOverlay';
 
 const useStore = create((set, get) => ({
   // Room state
@@ -29,6 +30,14 @@ const useStore = create((set, get) => ({
   displayName: '',
   mySocketId: null,
   localStream: null,
+  // The actual camera capture stream, kept separate from localStream so the
+  // self-view tile keeps showing the camera during a screen share (where
+  // localStream is swapped to the display stream for peers).
+  localCameraStream: null,
+  // Preferences chosen in the pre-join lobby (mic/camera on/off + device ids),
+  // carried into the meeting so the user's choices survive the join. null =
+  // accept all defaults.
+  lobbySettings: null,
   // MediaStreamTrack.getSettings().facingMode of the active local camera:
   // 'user' (front), 'environment' (rear), '' (desktop). Drives self-tile mirroring.
   localFacingMode: '',
@@ -66,6 +75,14 @@ const useStore = create((set, get) => ({
   // Recording
   isRecording: false,
 
+  // Live RTMP streaming
+  isStreaming: false,
+
+  // News-style broadcast graphics (ticker, bug, super/CG) - host-configured,
+  // synced over the collab relay; rendered by BroadcastOverlay (DOM) and
+  // recordingGrid's canvas (recording + RTMP stream).
+  broadcastOverlay: { ...DEFAULT_BROADCAST_OVERLAY },
+
   // Breakout state: { roomId, mainRoom, breakouts: [{name, identities}], assignments: [{identity, breakoutName}] } | null
   breakoutState: null,
 
@@ -85,11 +102,15 @@ const useStore = create((set, get) => ({
   setDisplayName: (displayName) => set({ displayName }),
   setMySocketId: (mySocketId) => set({ mySocketId }),
   setLocalStream: (localStream) => set({ localStream }),
+  setLocalCameraStream: (localCameraStream) => set({ localCameraStream }),
+  setLobbySettings: (lobbySettings) => set({ lobbySettings }),
   setLocalFacingMode: (facingMode) => set({ localFacingMode: facingMode }),
   setIsMuted: (isMuted) => set({ isMuted }),
   setIsVideoOff: (isVideoOff) => set({ isVideoOff }),
   setIsConnecting: (isConnecting) => set({ isConnecting }),
   setIsRecording: (isRecording) => set({ isRecording }),
+  setIsStreaming: (isStreaming) => set({ isStreaming }),
+  setBroadcastOverlay: (broadcastOverlay) => set({ broadcastOverlay }),
   setBreakoutState: (breakoutState) => set({ breakoutState }),
   setWaitingForRoom: (waitingForRoom) => set({ waitingForRoom }),
   setWaitingRoomId: (waitingRoomId) => set({ waitingRoomId }),
@@ -211,7 +232,7 @@ const useStore = create((set, get) => ({
         creator: 'Host',
         creatorId: p.hostIdentity,
         createdAt: p.createdAt,
-        isClosed: false,
+        isClosed: Boolean(p.isClosed),
         votes: new Map((p.votes || []).map((v) => [v.voterIdentity, v.optionIndex]))
       }))
     });
@@ -249,7 +270,15 @@ const useStore = create((set, get) => ({
 
   addParticipant: (participant) => {
     const participants = new Map(get().participants);
-    participants.set(participant.socketId, participant);
+    // Preserve a stream already attached via setParticipantStream (a peer's
+    // 'stream' event can land before the participant-joined presence event;
+    // without this the WebRTC stream is wiped to null and - because simple-peer
+    // fires 'stream' once per connection - the remote tile stays blank forever).
+    const existing = participants.get(participant.socketId);
+    participants.set(participant.socketId, {
+      ...participant,
+      stream: existing?.stream || participant.stream || null
+    });
     set({ participants });
   },
 
@@ -358,6 +387,8 @@ const useStore = create((set, get) => ({
     waitingList: [],
     displayName: '',
     localStream: null,
+    localCameraStream: null,
+    lobbySettings: null,
     localFacingMode: '',
     isMuted: false,
     isVideoOff: false,
@@ -371,7 +402,10 @@ const useStore = create((set, get) => ({
     activePanel: 'none',
     isScreenSharing: false,
     screenShareStream: null,
-    isRecording: false,
+isRecording: false,
+    isStreaming: false,
+    // Cleared so guests never carry a previous room's graphics into a new one.
+    broadcastOverlay: { ...DEFAULT_BROADCAST_OVERLAY },
     breakoutState: null,
     reactions: new Map(),
     recentReactions: [],
