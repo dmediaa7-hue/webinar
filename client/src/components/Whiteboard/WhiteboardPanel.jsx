@@ -28,6 +28,7 @@ export default function WhiteboardPanel({ onClose, roomId }) {
   const applyingRemoteRef = useRef(false);
   const broadcastTimerRef = useRef(null);
   const persistTimerRef = useRef(null);
+  const pendingDeltasRef = useRef([]);
 
   useEffect(() => {
     let cancelled = false;
@@ -56,7 +57,13 @@ export default function WhiteboardPanel({ onClose, roomId }) {
     if (isStaleWhiteboardDelta(decoded, lastSeqBySenderRef.current)) return;
     recordWhiteboardSeq(decoded, lastSeqBySenderRef.current);
     const api = apiRef.current;
-    if (!api) return;
+    if (!api) {
+      // Excalidraw not mounted yet (REST restore still in flight): hold the
+      // delta and apply it during the drain at mount, otherwise the preceding
+      // recordWhiteboardSeq makes this delta permanently stale.
+      pendingDeltasRef.current.push(decoded);
+      return;
+    }
     applyingRemoteRef.current = true;
     const merged = mergeWhiteboardElements(elementsRef.current, decoded);
     elementsRef.current = merged;
@@ -138,7 +145,21 @@ export default function WhiteboardPanel({ onClose, roomId }) {
           </div>
         ) : (
           <Excalidraw
-            excalidrawAPI={(api) => { apiRef.current = api; }}
+            excalidrawAPI={(api) => {
+              apiRef.current = api;
+              if (pendingDeltasRef.current.length) {
+                applyingRemoteRef.current = true;
+                const pending = pendingDeltasRef.current;
+                pendingDeltasRef.current = [];
+                const merged = pending.reduce(
+                  (els, delta) => mergeWhiteboardElements(els, delta),
+                  elementsRef.current
+                );
+                elementsRef.current = merged;
+                lastSentRef.current = merged;
+                api.updateScene({ elements: merged });
+              }
+            }}
             onChange={handleSceneChange}
             initialData={{ elements: restored }}
           />
