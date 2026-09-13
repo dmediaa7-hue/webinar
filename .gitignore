@@ -14,6 +14,7 @@ client/dist/
 API KEYS.txt
 *.key
 *.pem
+TEXTS/
 
 # Logs
 *.log
@@ -39,3 +40,9 @@ Thumbs.db
 *.md~
 # Local recording smoke artifacts
 RecSmoke/
+
+# Runtime artifacts
+Records/
+*.pid
+server/webinar.db
+client/public/inspect/
