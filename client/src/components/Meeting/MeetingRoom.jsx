@@ -3,11 +3,15 @@ import { useParams, useNavigate } from 'react-router-dom';
 import useStore from '../../store/useStore';
 import { useSocket, joinRoom, leaveRoom, roomRequiresPassword, sendTyping, muteParticipant, kickParticipant, lockRoom, getAttendance } from '../../hooks/useSocket';
 import { useWebRTC } from '../../hooks/useWebRTC';
+import { shouldInitiate } from '../../utils/initiator';
 import { useMedia } from '../../hooks/useMedia';
 import { MEDIA_CONSTRAINTS, EVENTS } from '../../utils/constants';
 import { downloadAttendanceCSV, downloadAttendancePDF } from '../../utils/attendanceExport';
 import VideoGrid from './VideoGrid';
 import MeetingControls from './MeetingControls';
+import RTMPStreamConfig from './RTMPStreamConfig';
+import BroadcastConfig from './BroadcastConfig';
+import BroadcastOverlay from './BroadcastOverlay';
 import ChatPanel from '../Chat/ChatPanel';
 import ParticipantList from '../Participants/ParticipantList';
 import BreakoutPanel from '../Breakout/BreakoutPanel';
@@ -43,9 +47,8 @@ export default function MeetingRoom() {
   const [copied, setCopied] = useState(false);
   const [needsPassword, setNeedsPassword] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
-  const [isMuted, setIsMuted] = useState(false);
-  const [isVideoOff, setIsVideoOff] = useState(false);
   const [techNotice, setTechNotice] = useState('');
+  const [mediaAttempt, setMediaAttempt] = useState(0);
 
   const {
     createPeer,
@@ -74,6 +77,11 @@ export default function MeetingRoom() {
   const waitingRoomId = store((state) => state.waitingRoomId);
   const localStream = store((state) => state.localStream);
   const joinedRoomId = store((state) => state.roomId);
+  // Mute/video live in the store as the single source of truth so host
+  // force-mute/video-off (which write the store directly) and local toggles
+  // can never desync the control-bar state.
+  const isMuted = store((state) => state.isMuted);
+  const isVideoOff = store((state) => state.isVideoOff);
   const mediaConnected = Boolean(localStream);
   const cameraStreamRef = useRef(null);
 
@@ -217,6 +225,11 @@ export default function MeetingRoom() {
     }
 
     return () => {
+      // React 18 StrictMode double-mounts in dev: the cleanup below tears the
+      // media session down, so mediaStartedRef must reset too - otherwise the
+      // remount's media-start effect bails and the client sits on "Connecting
+      // to media…" with no camera/mic and no peers forever.
+      mediaStartedRef.current = false;
       leaveRoom();
       cleanupAllPeers();
       media.stopStream();
@@ -232,16 +245,32 @@ export default function MeetingRoom() {
     if (mediaStartedRef.current) return;
     mediaStartedRef.current = true;
 
-    media.startMedia(MEDIA_CONSTRAINTS).then((stream) => {
+    const lobby = store.getState().lobbySettings;
+    const constraints = lobby
+      ? {
+          audio: lobby.micEnabled ? (lobby.micDeviceId ? { deviceId: lobby.micDeviceId } : MEDIA_CONSTRAINTS.audio) : false,
+          video: lobby.cameraEnabled
+            ? (lobby.cameraDeviceId ? { deviceId: lobby.cameraDeviceId } : MEDIA_CONSTRAINTS.video)
+            : false
+        }
+      : MEDIA_CONSTRAINTS;
+
+    media.startMedia(constraints).then((stream) => {
       if (stream) {
-        cameraStreamRef.current = stream;
-        store.getState().setLocalStream(stream);
+        const s = stream;
+        cameraStreamRef.current = s;
+        store.getState().setLocalStream(s);
+        store.getState().setLocalCameraStream(s);
         store.getState().setLocalFacingMode(media.facingMode);
+        // Reconcile the store's mute/video flags with the actual published
+        // track state (lobby may have joined with camera/mic off).
+        store.getState().setIsMuted(!s.getAudioTracks().some((t) => t.enabled));
+        store.getState().setIsVideoOff(!s.getVideoTracks().some((t) => t.enabled));
       } else {
         setTechNotice('Unable to access camera/microphone. Check your browser permissions and try again.');
       }
     });
-  }, [joinedRoomId, roomId, waitingForRoom]);
+  }, [joinedRoomId, roomId, waitingForRoom, mediaAttempt]);
 
   // createPeer bails without local media, so re-initiate to existing room
   // participants once media lands (idempotent; covers the pre-media window).
@@ -251,7 +280,7 @@ export default function MeetingRoom() {
     if (waitingForRoom) return;
     store.getState().participants.forEach((p, socketId) => {
       if (socketId !== socket.id) {
-        createPeer(socketId, true);
+        createPeer(socketId, shouldInitiate(socket.id, socketId));
       }
     });
   }, [localStream, joinedRoomId, roomId, waitingForRoom]);
@@ -260,9 +289,13 @@ export default function MeetingRoom() {
   useEffect(() => {
     if (!socket) return;
 
-    socket.on(EVENTS.OFFER, ({ from, fromName, sdp }) => handleOffer(from, fromName, sdp));
-    socket.on(EVENTS.ANSWER, ({ from, sdp }) => handleAnswer(from, sdp));
-    socket.on(EVENTS.ICE_CANDIDATE, ({ from, candidate }) => handleIceCandidate(from, candidate));
+    const onOffer = ({ from, fromName, sdp }) => handleOffer(from, fromName, sdp);
+    const onAnswer = ({ from, sdp }) => handleAnswer(from, sdp);
+    const onIceCandidate = ({ from, candidate }) => handleIceCandidate(from, candidate);
+
+    socket.on(EVENTS.OFFER, onOffer);
+    socket.on(EVENTS.ANSWER, onAnswer);
+    socket.on(EVENTS.ICE_CANDIDATE, onIceCandidate);
 
     const onParticipantLeft = ({ socketId }) => {
       cleanupPeer(socketId);
@@ -270,50 +303,64 @@ export default function MeetingRoom() {
 
     socket.on(EVENTS.PARTICIPANT_LEFT, onParticipantLeft);
 
-    socket.on(EVENTS.PARTICIPANT_JOINED, ({ participant }) => {
+    const onParticipantJoined = ({ participant }) => {
       if (participant.socketId !== socket.id) {
-        createPeer(participant.socketId, false);
+        createPeer(participant.socketId, shouldInitiate(socket.id, participant.socketId));
       }
-    });
+    };
 
-    socket.on(EVENTS.ROOM_JOINED, ({ participants: roomParticipants }) => {
+    socket.on(EVENTS.PARTICIPANT_JOINED, onParticipantJoined);
+
+    const onRoomJoined = ({ participants: roomParticipants }) => {
       store.getState().participants.forEach((p, socketId) => {
         if (socketId !== socket.id) {
-          createPeer(socketId, true);
+          createPeer(socketId, shouldInitiate(socket.id, socketId));
         }
       });
-    });
+    };
 
-    socket.on(EVENTS.PARTICIPANT_AUDIO_TOGGLED, ({ socketId, isMuted: muted }) => {
+    socket.on(EVENTS.ROOM_JOINED, onRoomJoined);
+
+    const onAudioToggled = ({ socketId, isMuted: muted }) => {
       store.getState().updateParticipant(socketId, { isMuted: muted });
-    });
+    };
 
-    socket.on(EVENTS.PARTICIPANT_VIDEO_TOGGLED, ({ socketId, isVideoOff: videoOff }) => {
+    socket.on(EVENTS.PARTICIPANT_AUDIO_TOGGLED, onAudioToggled);
+
+    const onVideoToggled = ({ socketId, isVideoOff: videoOff }) => {
       store.getState().updateParticipant(socketId, { isVideoOff: videoOff });
-    });
+    };
 
-    socket.on(EVENTS.SCREEN_SHARE_STARTED, ({ socketId }) => {
+    socket.on(EVENTS.PARTICIPANT_VIDEO_TOGGLED, onVideoToggled);
+
+    const onScreenShareStarted = ({ socketId }) => {
       store.getState().updateParticipant(socketId, { isScreenSharing: true });
-    });
+    };
 
-    socket.on(EVENTS.SCREEN_SHARE_STOPPED, ({ socketId }) => {
+    socket.on(EVENTS.SCREEN_SHARE_STARTED, onScreenShareStarted);
+
+    const onScreenShareStopped = ({ socketId }) => {
       store.getState().updateParticipant(socketId, { isScreenSharing: false });
-    });
+    };
 
-    socket.on('force-stop-screen-share', () => handleStopScreenShare());
+    socket.on(EVENTS.SCREEN_SHARE_STOPPED, onScreenShareStopped);
+
+    const onForceStopScreenShare = () => handleStopScreenShare();
+
+    socket.on('force-stop-screen-share', onForceStopScreenShare);
 
     return () => {
-      socket.off(EVENTS.OFFER);
-      socket.off(EVENTS.ANSWER);
-      socket.off(EVENTS.ICE_CANDIDATE);
+      socket.off(EVENTS.OFFER, onOffer);
+      socket.off(EVENTS.ANSWER, onAnswer);
+      socket.off(EVENTS.ICE_CANDIDATE, onIceCandidate);
       socket.off(EVENTS.PARTICIPANT_LEFT, onParticipantLeft);
-      socket.off(EVENTS.PARTICIPANT_JOINED);
-      socket.off(EVENTS.ROOM_JOINED);
-      socket.off(EVENTS.PARTICIPANT_AUDIO_TOGGLED);
-      socket.off(EVENTS.PARTICIPANT_VIDEO_TOGGLED);
-      socket.off(EVENTS.SCREEN_SHARE_STARTED);
-      socket.off(EVENTS.SCREEN_SHARE_STOPPED);
-      socket.off('force-stop-screen-share');
+      socket.off(EVENTS.PARTICIPANT_JOINED, onParticipantJoined);
+      socket.off(EVENTS.ROOM_JOINED, onRoomJoined);
+      socket.off(EVENTS.PARTICIPANT_AUDIO_TOGGLED, onAudioToggled);
+      socket.off(EVENTS.PARTICIPANT_VIDEO_TOGGLED, onVideoToggled);
+      socket.off(EVENTS.SCREEN_SHARE_STARTED, onScreenShareStarted);
+      socket.off(EVENTS.SCREEN_SHARE_STOPPED, onScreenShareStopped);
+      socket.off('force-stop-screen-share', onForceStopScreenShare);
       cleanupAllPeers();
       media.stopStream();
     };
@@ -331,19 +378,17 @@ export default function MeetingRoom() {
 
   const handleToggleMute = useCallback(() => {
     media.toggleMute();
-    const nextMuted = !isMuted;
-    setIsMuted(nextMuted);
-    store.getState().setIsMuted(nextMuted);
+    const nextMuted = !useStore.getState().isMuted;
+    useStore.getState().setIsMuted(nextMuted);
     socket.emit(EVENTS.TOGGLE_AUDIO, { isMuted: nextMuted });
-  }, [isMuted, socket]);
+  }, [socket]);
 
   const handleToggleVideo = useCallback(() => {
     media.toggleVideo();
-    const nextOff = !isVideoOff;
-    setIsVideoOff(nextOff);
-    store.getState().setIsVideoOff(nextOff);
+    const nextOff = !useStore.getState().isVideoOff;
+    useStore.getState().setIsVideoOff(nextOff);
     socket.emit(EVENTS.TOGGLE_VIDEO, { isVideoOff: nextOff });
-  }, [isVideoOff, socket]);
+  }, [socket]);
 
   const handleFlipCamera = useCallback(async () => {
     const result = await media.flipCamera();
@@ -613,6 +658,12 @@ export default function MeetingRoom() {
               <div className="max-w-md text-center bg-meeting-surface border border-meeting-border rounded-xl p-8">
                 <h2 className="text-lg font-semibold mb-2">Media unavailable</h2>
                 <p className="text-sm text-gray-400">{techNotice}</p>
+                <button
+                  onClick={() => { setTechNotice(''); mediaStartedRef.current = false; setMediaAttempt((a) => a + 1); }}
+                  className="mt-5 px-5 py-2.5 bg-primary hover:bg-primary-dark rounded-lg text-sm font-medium transition-colors"
+                >
+                  Try Again
+                </button>
               </div>
             </div>
           ) : mediaConnected ? (
@@ -629,6 +680,8 @@ export default function MeetingRoom() {
               roomId={roomId}
             />
           )}
+
+          <BroadcastOverlay />
         </div>
 
         {activePanel !== 'none' && activePanel !== 'whiteboard' && (
@@ -695,6 +748,10 @@ export default function MeetingRoom() {
         onToggleWhiteboard={() => togglePanel('whiteboard')}
         onLeave={handleLeave}
       />
+
+      <RTMPStreamConfig roomId={roomId} />
+
+      <BroadcastConfig />
 
       {/* Invite Link Modal */}
       {showInviteModal && (

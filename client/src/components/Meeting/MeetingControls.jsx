@@ -17,7 +17,8 @@ import {
   BarChart3,
   HelpCircle,
   PenTool,
-  FolderOpen
+  FolderOpen,
+  MoreHorizontal
 } from 'lucide-react';
 import { SERVER_URL } from '../../utils/constants';
 import useStore from '../../store/useStore';
@@ -74,6 +75,7 @@ export default function MeetingControls({
   const [showRecordingFolder, setShowRecordingFolder] = useState(false);
   const [consentGiven, setConsentGiven] = useState(false);
   const [showConsentModal, setShowConsentModal] = useState(false);
+  const [showMoreControls, setShowMoreControls] = useState(false);
   const [recordingElapsed, setRecordingElapsed] = useState(0);
   const recorderRef = useRef(null);
   const chunksRef = useRef([]);
@@ -82,6 +84,8 @@ export default function MeetingControls({
   const recordingGridRef = useRef(null);
   const startedAtRef = useRef(null);
   const recordingIdRef = useRef(null);
+  const mixSourcesRef = useRef(new Map()); // socketId -> { stream, source } connected to the mix
+  const audioSyncRef = useRef(null); // setInterval id keeping the mix in sync with the roster
   const folderPickerSupported = typeof window !== 'undefined' && typeof window.showDirectoryPicker === 'function';
   const participantCount = useStore((s) => s.participants.size);
 
@@ -103,6 +107,19 @@ export default function MeetingControls({
     if (recordingGridRef.current) {
       recordingGridRef.current.stop();
       recordingGridRef.current = null;
+    }
+  }, []);
+
+  const stopAudioSync = useCallback(() => {
+    if (audioSyncRef.current) {
+      clearInterval(audioSyncRef.current);
+      audioSyncRef.current = null;
+    }
+    if (mixSourcesRef.current.size > 0) {
+      mixSourcesRef.current.forEach(({ source }) => {
+        try { source.disconnect(); } catch {}
+      });
+      mixSourcesRef.current.clear();
     }
   }, []);
 
@@ -168,20 +185,51 @@ export default function MeetingControls({
       audioContextRef.current = new AudioContext();
       const destination = audioContextRef.current.createMediaStreamDestination();
 
-      if (sourceStream) {
-        const source = audioContextRef.current.createMediaStreamSource(sourceStream);
+      // Local mic must come from the camera stream: during a screen share
+      // localStream is the display stream, which has no audio track.
+      const localMicStream = store.localCameraStream || store.localStream;
+      if (localMicStream) {
+        const source = audioContextRef.current.createMediaStreamSource(localMicStream);
         source.connect(destination);
       }
 
-      const participants = store.participants;
-      participants.forEach((p) => {
-        if (p.stream) {
+      // Mix must follow the live roster: late joiners get video tiles from the
+      // canvas grid but would stay silent if their streams were never added.
+      const mixSources = new Map();
+      mixSourcesRef.current = mixSources;
+
+      const syncAudioMix = () => {
+        const ctx = audioContextRef.current;
+        if (!ctx) return;
+        const current = useStore.getState();
+        const currentId = current.mySocketId;
+
+        current.participants.forEach((p, socketId) => {
+          if (socketId === currentId || !p.stream) return;
+          const existing = mixSources.get(socketId);
+          if (existing && existing.stream === p.stream) return;
+          if (existing) {
+            try { existing.source.disconnect(); } catch {}
+            mixSources.delete(socketId);
+          }
           try {
-            const source = audioContextRef.current.createMediaStreamSource(p.stream);
+            const source = ctx.createMediaStreamSource(p.stream);
             source.connect(destination);
+            mixSources.set(socketId, { stream: p.stream, source });
           } catch {}
-        }
-      });
+        });
+
+        mixSources.forEach((entry, socketId) => {
+          const p = current.participants.get(socketId);
+          if (!p || !p.stream || p.stream !== entry.stream) {
+            try { entry.source.disconnect(); } catch {}
+            mixSources.delete(socketId);
+          }
+        });
+      };
+
+      syncAudioMix();
+      audioSyncRef.current = setInterval(syncAudioMix, 1000);
 
       // Canvas grid of ALL participants (local + every remote stream) becomes
       // the recorded video, so recordings are a fullscreen gallery view.
@@ -213,6 +261,7 @@ export default function MeetingControls({
 
       mimeType = candidates[0];
       if (!mimeType) {
+        stopAudioSync();
         disposeRecordingGrid();
         setRecordingStatus('Recording is not supported in this browser');
         setTimeout(() => setRecordingStatus(''), 5000);
@@ -225,6 +274,7 @@ export default function MeetingControls({
       mixedStream = new MediaStream([...videoTracks, ...audioTracks]);
     } catch (err) {
       console.error('[Recording] AudioContext mixing failed, using source stream audio:', err);
+      stopAudioSync();
       if (audioContextRef.current) {
         audioContextRef.current.close().catch(() => {});
         audioContextRef.current = null;
@@ -238,6 +288,7 @@ export default function MeetingControls({
       recorder = mimeType ? new MediaRecorder(mixedStream, { mimeType }) : new MediaRecorder(mixedStream);
     } catch (err) {
       console.error('[Recording] MediaRecorder failed to start:', err);
+      stopAudioSync();
       setRecordingStatus('Failed to start recording in this browser');
       setTimeout(() => setRecordingStatus(''), 5000);
       return;
@@ -249,6 +300,7 @@ export default function MeetingControls({
     };
 
     recorder.onstop = async () => {
+      stopAudioSync();
       if (audioContextRef.current) {
         audioContextRef.current.close().catch(() => {});
         audioContextRef.current = null;
@@ -321,6 +373,7 @@ export default function MeetingControls({
     }
     recorderRef.current = null;
     disposeRecordingGrid();
+    stopAudioSync();
     setLocalRecording(false);
     startedAtRef.current = null;
 
@@ -335,7 +388,21 @@ export default function MeetingControls({
     }
 
     stopRecording();
-  }, [disposeRecordingGrid]);
+  }, [disposeRecordingGrid, stopAudioSync]);
+
+  // Keep a stable ref so the unmount cleanup below always calls the latest
+  // handler without re-subscribing the effect.
+  const handleStopRecordingRef = useRef(handleStopRecording);
+  handleStopRecordingRef.current = handleStopRecording;
+
+  useEffect(() => {
+    return () => {
+      // SPA leave/route change unmounts MeetingControls while the MediaRecorder
+      // is still live. pagehide only pauses; without this cleanup the recorder
+      // leaks and the server row is left stuck in the 'recording' state.
+      handleStopRecordingRef.current();
+    };
+  }, []);
 
   const handleToggleRecording = useCallback(() => {
     if (!isHost) return;
@@ -453,9 +520,10 @@ export default function MeetingControls({
         </div>
       )}
 
-      <div className="max-w-3xl mx-auto flex items-center justify-center gap-1 sm:gap-2 overflow-x-auto py-1 [scrollbar-width:none] [-webkit-overflow-scrolling:touch]">
-        {/* Right-side main controls (always visible, first on mobile) */}
-        <div className="flex items-center gap-1 sm:gap-2 shrink-0">
+      <div className="max-w-3xl mx-auto relative py-1">
+        {/* Primary controls (Mute/Unmute, Camera, Flip, Share) - always visible */}
+        <div className="flex items-center justify-center gap-1 sm:gap-2 overflow-x-auto [scrollbar-width:none] [-webkit-overflow-scrolling:touch]">
+          <div className="flex items-center gap-1 sm:gap-2 shrink-0">
           {/* Mic toggle */}
           <button
             onClick={onToggleAudio}
@@ -508,165 +576,201 @@ export default function MeetingControls({
             {isScreenSharing ? <MonitorDown size={20} /> : <MonitorUp size={20} />}
           </button>
 
-          {/* Leave (red, always visible) */}
+          {/* More controls - opens the remaining controls popover */}
           <button
-            onClick={onLeave}
-            className="p-2.5 sm:p-3 rounded-lg bg-red-600 hover:bg-red-700 transition-colors ml-1"
-            title="Leave meeting"
-            aria-label="Leave meeting"
+            onClick={() => setShowMoreControls((v) => !v)}
+            className={`p-2.5 sm:p-3 rounded-lg transition-all duration-200 ${
+              showMoreControls
+                ? 'bg-primary hover:bg-primary-dark'
+                : 'bg-meeting-card hover:bg-white/10'
+            }`}
+            title="More controls"
+            aria-label="More controls"
           >
-            <PhoneOff size={20} />
+            <MoreHorizontal size={20} />
           </button>
+          </div>
         </div>
 
-        {/* Separator */}
-        <div className="w-px h-6 bg-meeting-border mx-1 shrink-0" />
+        {showMoreControls && (
+          <>
+            {/* Tap-away backdrop */}
+            <div className="fixed inset-0 z-40" onClick={() => setShowMoreControls(false)} />
 
-        {/* Left-side secondary controls (scrollable on mobile) */}
-        <div className="flex items-center gap-1 sm:gap-2 shrink-0">
-          {/* Lock room (host only) */}
-          {isHost && (
-            <button
-              onClick={onToggleLock}
-              className={`p-2.5 sm:p-3 rounded-lg transition-all duration-200 ${
-                isRoomLocked
-                  ? 'bg-primary hover:bg-primary-dark'
-                  : 'bg-meeting-card hover:bg-white/10'
-              }`}
-              title={isRoomLocked ? 'Unlock room' : 'Lock room'}
-              aria-label={isRoomLocked ? 'Unlock room' : 'Lock room'}
-            >
-              {isRoomLocked ? <Unlock size={20} /> : <Lock size={20} />}
-            </button>
-          )}
+            {/* Popover: remaining controls, anchored above the bar */}
+            <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 z-50 w-[min(92vw,24rem)] bg-meeting-card border border-meeting-border rounded-xl p-2 shadow-2xl">
+              <div className="grid grid-cols-3 gap-1 sm:gap-2">
+                {/* Lock room (host only) */}
+                {isHost && (
+                  <button
+                    onClick={() => { onToggleLock(); setShowMoreControls(false); }}
+                    className={`flex flex-col items-center justify-center gap-1 p-2.5 sm:p-3 rounded-lg transition-all duration-200 ${
+                      isRoomLocked
+                        ? 'bg-primary hover:bg-primary-dark'
+                        : 'bg-meeting-card hover:bg-white/10'
+                    }`}
+                    title={isRoomLocked ? 'Unlock room' : 'Lock room'}
+                    aria-label={isRoomLocked ? 'Unlock room' : 'Lock room'}
+                  >
+                    {isRoomLocked ? <Unlock size={20} /> : <Lock size={20} />}
+                    <span className="text-[10px] leading-none">{isRoomLocked ? 'Unlock' : 'Lock'}</span>
+                  </button>
+                )}
 
-          {/* Recording (host only) */}
-          {isHost && (
-            <div className="flex items-center gap-1">
-              <button
-                onClick={handleToggleRecording}
-                className={`p-2.5 sm:p-3 rounded-lg transition-all duration-200 ${
-                  isRecording || localRecording
-                    ? 'bg-red-600 text-white'
-                    : 'bg-meeting-card hover:bg-white/10'
-                }`}
-                title={isRecording || localRecording ? 'Stop recording' : 'Start recording'}
-                aria-label={isRecording || localRecording ? 'Stop recording' : 'Start recording'}
-              >
-                <CircleDot size={20} className={isRecording || localRecording ? 'recording-pulse' : ''} />
-              </button>
+                {/* Recording (host only) */}
+                {isHost && (
+                  <button
+                    onClick={() => { handleToggleRecording(); setShowMoreControls(false); }}
+                    className={`flex flex-col items-center justify-center gap-1 p-2.5 sm:p-3 rounded-lg transition-all duration-200 ${
+                      isRecording || localRecording
+                        ? 'bg-red-600 text-white'
+                        : 'bg-meeting-card hover:bg-white/10'
+                    }`}
+                    title={isRecording || localRecording ? 'Stop recording' : 'Start recording'}
+                    aria-label={isRecording || localRecording ? 'Stop recording' : 'Start recording'}
+                  >
+                    <CircleDot size={20} className={isRecording || localRecording ? 'recording-pulse' : ''} />
+                    <span className="text-[10px] leading-none">Record</span>
+                  </button>
+                )}
 
-              {/* Folder path toggle (tap-friendly, works on touch devices) */}
-              {!isRecording && !localRecording && (
+                {/* Recording folder (host only) */}
+                {isHost && !isRecording && !localRecording && (
+                  <button
+                    onClick={() => { setShowRecordingFolder((v) => !v); setShowMoreControls(false); }}
+                    className={`flex flex-col items-center justify-center gap-1 p-2.5 sm:p-3 rounded-lg transition-all duration-200 ${
+                      showRecordingFolder ? 'bg-primary hover:bg-primary-dark' : 'bg-meeting-card hover:bg-white/10'
+                    }`}
+                    title="Recording folder"
+                    aria-label="Set recording folder"
+                  >
+                    <FolderOpen size={20} />
+                    <span className="text-[10px] leading-none">Folder</span>
+                  </button>
+                )}
+
+                {/* Chat */}
                 <button
-                  onClick={() => setShowRecordingFolder((v) => !v)}
-                  className={`p-2.5 sm:p-3 rounded-lg transition-all duration-200 ${
-                    showRecordingFolder ? 'bg-primary hover:bg-primary-dark' : 'bg-meeting-card hover:bg-white/10'
+                  onClick={() => { onToggleChat(); setShowMoreControls(false); }}
+                  className={`flex flex-col items-center justify-center gap-1 p-2.5 sm:p-3 rounded-lg transition-all duration-200 ${
+                    activePanel === 'chat'
+                      ? 'bg-primary hover:bg-primary-dark'
+                      : 'bg-meeting-card hover:bg-white/10'
                   }`}
-                  title="Recording folder"
-                  aria-label="Set recording folder"
+                  title="Chat"
+                  aria-label="Toggle chat"
                 >
-                  <FolderOpen size={20} />
+                  <MessageSquare size={20} />
+                  <span className="text-[10px] leading-none">Chat</span>
                 </button>
-              )}
+
+                {/* Participants */}
+                <button
+                  onClick={() => { onToggleParticipants(); setShowMoreControls(false); }}
+                  className={`flex flex-col items-center justify-center gap-1 p-2.5 sm:p-3 rounded-lg transition-all duration-200 ${
+                    activePanel === 'participants'
+                      ? 'bg-primary hover:bg-primary-dark'
+                      : 'bg-meeting-card hover:bg-white/10'
+                  }`}
+                  title="Participants"
+                  aria-label="Toggle participants list"
+                >
+                  <Users size={20} />
+                  <span className="text-[10px] leading-none">People</span>
+                </button>
+
+                {/* Breakouts (host only) */}
+                {isHost && (
+                  <button
+                    onClick={() => { onToggleBreakouts(); setShowMoreControls(false); }}
+                    className={`flex flex-col items-center justify-center gap-1 p-2.5 sm:p-3 rounded-lg transition-all duration-200 ${
+                      activePanel === 'breakouts'
+                        ? 'bg-primary hover:bg-primary-dark'
+                        : 'bg-meeting-card hover:bg-white/10'
+                    }`}
+                    title="Breakout rooms"
+                    aria-label="Toggle breakout rooms"
+                  >
+                    <Grid2x2 size={20} />
+                    <span className="text-[10px] leading-none">Breakouts</span>
+                  </button>
+                )}
+
+                {/* Polls */}
+                {mediaConnected && (
+                  <button
+                    onClick={() => { onTogglePolls(); setShowMoreControls(false); }}
+                    className={`flex flex-col items-center justify-center gap-1 p-2.5 sm:p-3 rounded-lg transition-all duration-200 ${
+                      activePanel === 'polls'
+                        ? 'bg-primary hover:bg-primary-dark'
+                        : 'bg-meeting-card hover:bg-white/10'
+                    }`}
+                    title="Polls"
+                    aria-label="Toggle polls"
+                  >
+                    <BarChart3 size={20} />
+                    <span className="text-[10px] leading-none">Polls</span>
+                  </button>
+                )}
+
+                {/* Q&A */}
+                {mediaConnected && (
+                  <button
+                    onClick={() => { onToggleQa(); setShowMoreControls(false); }}
+                    className={`flex flex-col items-center justify-center gap-1 p-2.5 sm:p-3 rounded-lg transition-all duration-200 ${
+                      activePanel === 'qa'
+                        ? 'bg-primary hover:bg-primary-dark'
+                        : 'bg-meeting-card hover:bg-white/10'
+                    }`}
+                    title="Q&A"
+                    aria-label="Toggle Q and A"
+                  >
+                    <HelpCircle size={20} />
+                    <span className="text-[10px] leading-none">Q&A</span>
+                  </button>
+                )}
+
+                {/* Whiteboard */}
+                {mediaConnected && (
+                  <button
+                    onClick={() => { onToggleWhiteboard(); setShowMoreControls(false); }}
+                    className={`flex flex-col items-center justify-center gap-1 p-2.5 sm:p-3 rounded-lg transition-all duration-200 ${
+                      activePanel === 'whiteboard'
+                        ? 'bg-primary hover:bg-primary-dark'
+                        : 'bg-meeting-card hover:bg-white/10'
+                    }`}
+                    title="Whiteboard"
+                    aria-label="Toggle whiteboard"
+                  >
+                    <PenTool size={20} />
+                    <span className="text-[10px] leading-none">Board</span>
+                  </button>
+                )}
+
+                {/* Reactions */}
+                {mediaConnected && (
+                  <div className="flex flex-col items-center justify-center gap-1">
+                    <ReactionPicker />
+                    <span className="text-[10px] leading-none">Reactions</span>
+                  </div>
+                )}
+              </div>
+
+              {/* Leave (full width, red) */}
+              <div className="mt-2 pt-2 border-t border-meeting-border">
+                <button
+                  onClick={onLeave}
+                  className="w-full flex items-center justify-center gap-2 p-2.5 rounded-lg bg-red-600 hover:bg-red-700 transition-colors"
+                  title="Leave meeting"
+                  aria-label="Leave meeting"
+                >
+                  <PhoneOff size={20} />
+                  <span className="text-sm font-medium">Leave meeting</span>
+                </button>
+              </div>
             </div>
-          )}
-
-          {/* Chat */}
-          <button
-            onClick={onToggleChat}
-            className={`p-2.5 sm:p-3 rounded-lg transition-all duration-200 ${
-              activePanel === 'chat'
-                ? 'bg-primary hover:bg-primary-dark'
-                : 'bg-meeting-card hover:bg-white/10'
-            }`}
-            title="Chat"
-            aria-label="Toggle chat"
-          >
-            <MessageSquare size={20} />
-          </button>
-
-          {/* Participants */}
-          <button
-            onClick={onToggleParticipants}
-            className={`p-2.5 sm:p-3 rounded-lg transition-all duration-200 ${
-              activePanel === 'participants'
-                ? 'bg-primary hover:bg-primary-dark'
-                : 'bg-meeting-card hover:bg-white/10'
-            }`}
-            title="Participants"
-            aria-label="Toggle participants list"
-          >
-            <Users size={20} />
-          </button>
-
-          {/* Breakouts (host only) */}
-          {isHost && (
-            <button
-              onClick={onToggleBreakouts}
-              className={`p-2.5 sm:p-3 rounded-lg transition-all duration-200 ${
-                activePanel === 'breakouts'
-                  ? 'bg-primary hover:bg-primary-dark'
-                  : 'bg-meeting-card hover:bg-white/10'
-              }`}
-              title="Breakout rooms"
-              aria-label="Toggle breakout rooms"
-            >
-              <Grid2x2 size={20} />
-            </button>
-          )}
-
-          {/* Polls */}
-          {mediaConnected && (
-            <button
-              onClick={onTogglePolls}
-              className={`p-2.5 sm:p-3 rounded-lg transition-all duration-200 ${
-                activePanel === 'polls'
-                  ? 'bg-primary hover:bg-primary-dark'
-                  : 'bg-meeting-card hover:bg-white/10'
-              }`}
-              title="Polls"
-              aria-label="Toggle polls"
-            >
-              <BarChart3 size={20} />
-            </button>
-          )}
-
-          {/* Q&A */}
-          {mediaConnected && (
-            <button
-              onClick={onToggleQa}
-              className={`p-2.5 sm:p-3 rounded-lg transition-all duration-200 ${
-                activePanel === 'qa'
-                  ? 'bg-primary hover:bg-primary-dark'
-                  : 'bg-meeting-card hover:bg-white/10'
-              }`}
-              title="Q&A"
-              aria-label="Toggle Q and A"
-            >
-              <HelpCircle size={20} />
-            </button>
-          )}
-
-          {/* Whiteboard */}
-          {mediaConnected && (
-            <button
-              onClick={onToggleWhiteboard}
-              className={`p-2.5 sm:p-3 rounded-lg transition-all duration-200 ${
-                activePanel === 'whiteboard'
-                  ? 'bg-primary hover:bg-primary-dark'
-                  : 'bg-meeting-card hover:bg-white/10'
-              }`}
-              title="Whiteboard"
-              aria-label="Toggle whiteboard"
-            >
-              <PenTool size={20} />
-            </button>
-          )}
-
-          {/* Reactions */}
-          {mediaConnected && <ReactionPicker />}
-        </div>
+          </>
+        )}
       </div>
 
       {isHost && showConsentModal && (
