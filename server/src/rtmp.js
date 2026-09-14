@@ -151,6 +151,10 @@ function handleRtmp(io, socket) {
 
     session = { roomId: socket.data.roomId, targetId, url: fullUrl, proc, dying: false, queue: [] };
 
+    // Swallow EPIPE from a destination that died mid-stream. Unhandled stream
+    // 'error' events crash the whole Node process, not just this stream.
+    proc.stdin.on('error', () => { /* EPIPE - ffmpeg already exited */ });
+
     const fail = (message) => {
       const detail = stderrTail.trim() ? ` (${stderrTail.trim().split('\n').pop()})` : '';
       teardownSession(session, message);
