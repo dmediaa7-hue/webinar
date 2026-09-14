@@ -22,6 +22,18 @@ test('resolveRtmpUrl tolerates whitespace around both fields', () => {
     'rtmp://ingest.example.com/app/key-1');
 });
 
+test('resolveRtmpUrl assumes rtmp:// for bare host-like ingest URLs', () => {
+  assert.equal(resolveRtmpUrl('live.twitch.tv/app', 'key-1'),
+    'rtmp://live.twitch.tv/app/key-1');
+  assert.equal(resolveRtmpUrl('a.rtmp.youtube.com/live2', 'abcd-1234'),
+    'rtmp://a.rtmp.youtube.com/live2/abcd-1234');
+  assert.equal(resolveRtmpUrl('192.168.1.10:1935/live', 'key-1'),
+    'rtmp://192.168.1.10:1935/live/key-1');
+  assert.equal(resolveRtmpUrl('live.twitch.tv/app', ''),
+    'rtmp://live.twitch.tv/app');
+  assert.ok(isValidRtmpUrl(resolveRtmpUrl('live.twitch.tv/app', 'key-1')));
+});
+
 test('isValidRtmpUrl accepts rtmp:// and rtmps:// endpoints', () => {
   assert.equal(isValidRtmpUrl('rtmp://a.rtmp.youtube.com/live2'), true);
   assert.equal(isValidRtmpUrl('rtmps://ingest.example.com/app'), true);
